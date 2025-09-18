@@ -12,11 +12,12 @@ warnings.filterwarnings('ignore')
 import imageio
 import torch
 import torchvision
+import time
 
 
 from src.facerender.modules.keypoint_detector import HEEstimator, KPDetector
 from src.facerender.modules.mapping import MappingNet
-from src.facerender.modules.generator import OcclusionAwareGenerator, OcclusionAwareSPADEGenerator
+from src.facerender.modules.generator import  OcclusionAwareSPADEGenerator
 from src.facerender.modules.make_animation import make_animation 
 
 from pydub import AudioSegment 
@@ -154,7 +155,7 @@ class AnimateFromCoeff():
 
         return checkpoint['epoch']
 
-    def generate(self, x, video_save_dir, pic_path, crop_info, enhancer=None, background_enhancer=None, preprocess='crop', img_size=256):
+    def generate(self, x, video_save_dir, pic_path, crop_info, enhancer=None, background_enhancer=None, preprocess='crop', img_size=256, profile=False, batch_size=8):
 
         source_image=x['source_image'].type(torch.FloatTensor)
         source_semantics=x['source_semantics'].type(torch.FloatTensor)
@@ -180,9 +181,18 @@ class AnimateFromCoeff():
 
         frame_num = x['frame_num']
 
+        # make_animation is the core GPU-heavy step
+        if profile and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t_make0 = time.time()
         predictions_video = make_animation(source_image, source_semantics, target_semantics,
                                         self.generator, self.kp_extractor, self.he_estimator, self.mapping, 
                                         yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp = True)
+        if profile and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t_make1 = time.time()
+        if profile:
+            print(f'[profile] make_animation (GPU) time: {t_make1 - t_make0:.3f}s')
 
         predictions_video = predictions_video.reshape((-1,)+predictions_video.shape[2:])
         predictions_video = predictions_video[:frame_num]
@@ -202,7 +212,11 @@ class AnimateFromCoeff():
         video_name = x['video_name']  + '.mp4'
         path = os.path.join(video_save_dir, 'temp_'+video_name)
         
+        t_save0 = time.time()
         imageio.mimsave(path, result,  fps=float(25))
+        t_save1 = time.time()
+        if profile:
+            print(f'[profile] save raw video frames to gif/mp4 time: {t_save1 - t_save0:.3f}s')
 
         av_path = os.path.join(video_save_dir, video_name)
         return_path = av_path 
@@ -212,14 +226,22 @@ class AnimateFromCoeff():
         new_audio_path = os.path.join(video_save_dir, audio_name+'.wav')
         start_time = 0
         # cog will not keep the .mp3 filename
+        t_audio0 = time.time()
         sound = AudioSegment.from_file(audio_path)
         frames = frame_num 
         end_time = start_time + frames*1/25*1000
         word1=sound.set_frame_rate(16000)
         word = word1[start_time:end_time]
         word.export(new_audio_path, format="wav")
+        t_audio1 = time.time()
+        if profile:
+            print(f'[profile] audio slicing/export time: {t_audio1 - t_audio0:.3f}s')
 
+        t_mux0 = time.time()
         save_video_with_watermark(path, new_audio_path, av_path, watermark= False)
+        t_mux1 = time.time()
+        if profile:
+            print(f'[profile] mux audio+video (watermark) time: {t_mux1 - t_mux0:.3f}s')
         print(f'The generated video is named {video_save_dir}/{video_name}') 
 
         if 'full' in preprocess.lower():
@@ -240,11 +262,19 @@ class AnimateFromCoeff():
             return_path = av_path_enhancer
 
             try:
-                enhanced_images_gen_with_len = enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                t_enh0 = time.time()
+                enhanced_images_gen_with_len = enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer, batch_size=batch_size)
                 imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+                t_enh1 = time.time()
+                if profile:
+                    print(f'[profile] enhancer_generator_with_len + save time: {t_enh1 - t_enh0:.3f}s (batch_size={batch_size})')
             except:
-                enhanced_images_gen_with_len = enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                t_enh0 = time.time()
+                enhanced_images_gen_with_len = enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer, batch_size=batch_size)
                 imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+                t_enh1 = time.time()
+                if profile:
+                    print(f'[profile] enhancer_list + save time: {t_enh1 - t_enh0:.3f}s (batch_size={batch_size})')
             
             save_video_with_watermark(enhanced_path, new_audio_path, av_path_enhancer, watermark= False)
             print(f'The generated video is named {video_save_dir}/{video_name_enhancer}')

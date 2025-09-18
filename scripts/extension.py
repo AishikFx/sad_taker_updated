@@ -2,7 +2,7 @@ import os, sys
 from pathlib import Path
 import tempfile
 import gradio as gr
-from modules.call_queue import wrap_gradio_gpu_call, wrap_queued_call
+from modules.call_queue import wrap_queued_call
 from modules.shared import opts, OptionInfo
 from modules import shared, paths, script_callbacks
 import launch

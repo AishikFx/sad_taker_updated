@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: sadtalker_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  microservice:
+    build: .
+    container_name: sadtalker_microservice
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - SADTALKER_CHECKPOINTS_PATH=/app/checkpoints
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./microservice:/app/microservice:rw
+      - ./src:/app/src:rw
+      - ./checkpoints:/app/checkpoints:rw
+    command: uvicorn microservice.main:app --host 0.0.0.0 --port 8000
+
+volumes:
+  redis_data:

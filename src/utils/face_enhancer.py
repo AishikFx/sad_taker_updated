@@ -23,11 +23,11 @@ class GeneratorWithLen(object):
     def __iter__(self):
         return self.gen
 
-def enhancer_list(images, method='gfpgan', bg_upsampler='realesrgan'):
-    gen = enhancer_generator_no_len(images, method=method, bg_upsampler=bg_upsampler)
+def enhancer_list(images, method='gfpgan', bg_upsampler='realesrgan', batch_size=1):
+    gen = enhancer_generator_no_len(images, method=method, bg_upsampler=bg_upsampler, batch_size=batch_size)
     return list(gen)
 
-def enhancer_generator_with_len(images, method='gfpgan', bg_upsampler='realesrgan'):
+def enhancer_generator_with_len(images, method='gfpgan', bg_upsampler='realesrgan', batch_size=1):
     """ Provide a generator with a __len__ method so that it can passed to functions that
     call len()"""
 
@@ -35,11 +35,11 @@ def enhancer_generator_with_len(images, method='gfpgan', bg_upsampler='realesrga
         # TODO: Create a generator version of load_video_to_cv2
         images = load_video_to_cv2(images)
 
-    gen = enhancer_generator_no_len(images, method=method, bg_upsampler=bg_upsampler)
+    gen = enhancer_generator_no_len(images, method=method, bg_upsampler=bg_upsampler, batch_size=batch_size)
     gen_with_len = GeneratorWithLen(gen, len(images))
     return gen_with_len
 
-def enhancer_generator_no_len(images, method='gfpgan', bg_upsampler='realesrgan'):
+def enhancer_generator_no_len(images, method='gfpgan', bg_upsampler='realesrgan', batch_size=1):
     """ Provide a generator function so that all of the enhanced images don't need
     to be stored in memory at the same time. This can save tons of RAM compared to
     the enhancer function. """
@@ -108,16 +108,43 @@ def enhancer_generator_no_len(images, method='gfpgan', bg_upsampler='realesrgan'
         bg_upsampler=bg_upsampler)
 
     # ------------------------ restore ------------------------
-    for idx in tqdm(range(len(images)), 'Face Enhancer:'):
-        
-        img = cv2.cvtColor(images[idx], cv2.COLOR_RGB2BGR)
-        
-        # restore faces and background if necessary
-        cropped_faces, restored_faces, r_img = restorer.enhance(
-            img,
-            has_aligned=False,
-            only_center_face=False,
-            paste_back=True)
-        
-        r_img = cv2.cvtColor(r_img, cv2.COLOR_BGR2RGB)
-        yield r_img
+    if batch_size > 1:
+        # Batched processing for better GPU utilization
+        for batch_start in tqdm(range(0, len(images), batch_size), 'Face Enhancer (batched):'):
+            batch_end = min(batch_start + batch_size, len(images))
+            batch_images = []
+            
+            # Prepare batch
+            for idx in range(batch_start, batch_end):
+                img = cv2.cvtColor(images[idx], cv2.COLOR_RGB2BGR)
+                batch_images.append(img)
+            
+            # Process batch
+            batch_results = []
+            for img in batch_images:
+                cropped_faces, restored_faces, r_img = restorer.enhance(
+                    img,
+                    has_aligned=False,
+                    only_center_face=False,
+                    paste_back=True)
+                r_img = cv2.cvtColor(r_img, cv2.COLOR_BGR2RGB)
+                batch_results.append(r_img)
+            
+            # Yield batch results
+            for r_img in batch_results:
+                yield r_img
+    else:
+        # Original sequential processing
+        for idx in tqdm(range(len(images)), 'Face Enhancer:'):
+            
+            img = cv2.cvtColor(images[idx], cv2.COLOR_RGB2BGR)
+            
+            # restore faces and background if necessary
+            cropped_faces, restored_faces, r_img = restorer.enhance(
+                img,
+                has_aligned=False,
+                only_center_face=False,
+                paste_back=True)
+            
+            r_img = cv2.cvtColor(r_img, cv2.COLOR_BGR2RGB)
+            yield r_img

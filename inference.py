@@ -13,7 +13,12 @@ from src.generate_facerender_batch import get_facerender_data
 from src.utils.init_path import init_path
 
 def main(args):
-    #torch.backends.cudnn.enabled = False
+    # Enable optimizations for better GPU utilization
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+    
+    # Optional: Enable mixed precision for faster inference
+    # torch.backends.cudnn.enabled = False
 
     pic_path = args.source_image
     audio_path = args.driven_audio
@@ -39,12 +44,19 @@ def main(args):
     
     animate_from_coeff = AnimateFromCoeff(sadtalker_paths, device)
 
+    # profiling
+    profile = getattr(args, 'profile', False)
+
     #crop image and extract 3dmm from image
     first_frame_dir = os.path.join(save_dir, 'first_frame_dir')
     os.makedirs(first_frame_dir, exist_ok=True)
     print('3DMM Extraction for source image')
+    t0 = time.time()
     first_coeff_path, crop_pic_path, crop_info =  preprocess_model.generate(pic_path, first_frame_dir, args.preprocess,\
                                                                              source_image_flag=True, pic_size=args.size)
+    t1 = time.time()
+    if profile:
+        print(f'[profile] 3DMM extraction time: {t1-t0:.3f}s')
     if first_coeff_path is None:
         print("Can't get the coeffs of the input")
         return
@@ -71,8 +83,17 @@ def main(args):
         ref_pose_coeff_path=None
 
     #audio2ceoff
+    t0 = time.time()
     batch = get_data(first_coeff_path, audio_path, device, ref_eyeblink_coeff_path, still=args.still)
+    t1 = time.time()
+    if profile:
+        print(f'[profile] prepare audio/batch time: {t1-t0:.3f}s')
+
+    t0 = time.time()
     coeff_path = audio_to_coeff.generate(batch, save_dir, pose_style, ref_pose_coeff_path)
+    t1 = time.time()
+    if profile:
+        print(f'[profile] audio2coeff generate time: {t1-t0:.3f}s')
 
     # 3dface render
     if args.face3dvis:
@@ -84,8 +105,12 @@ def main(args):
                                 batch_size, input_yaw_list, input_pitch_list, input_roll_list,
                                 expression_scale=args.expression_scale, still_mode=args.still, preprocess=args.preprocess, size=args.size)
     
+    t0 = time.time()
     result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
-                                enhancer=args.enhancer, background_enhancer=args.background_enhancer, preprocess=args.preprocess, img_size=args.size)
+                                enhancer=args.enhancer, background_enhancer=args.background_enhancer, preprocess=args.preprocess, img_size=args.size, profile=profile, batch_size=batch_size)
+    t1 = time.time()
+    if profile:
+        print(f'[profile] facerender total generate time: {t1-t0:.3f}s')
     
     shutil.move(result, save_dir+'.mp4')
     print('The generated video is named:', save_dir+'.mp4')
@@ -104,7 +129,7 @@ if __name__ == '__main__':
     parser.add_argument("--checkpoint_dir", default='./checkpoints', help="path to output")
     parser.add_argument("--result_dir", default='./results', help="path to output")
     parser.add_argument("--pose_style", type=int, default=0,  help="input pose style from [0, 46)")
-    parser.add_argument("--batch_size", type=int, default=2,  help="the batch size of facerender")
+    parser.add_argument("--batch_size", type=int, default=8,  help="the batch size of facerender")
     parser.add_argument("--size", type=int, default=256,  help="the image size of the facerender")
     parser.add_argument("--expression_scale", type=float, default=1.,  help="the batch size of facerender")
     parser.add_argument('--input_yaw', nargs='+', type=int, default=None, help="the input yaw degree of the user ")
@@ -112,6 +137,7 @@ if __name__ == '__main__':
     parser.add_argument('--input_roll', nargs='+', type=int, default=None, help="the input roll degree of the user")
     parser.add_argument('--enhancer',  type=str, default=None, help="Face enhancer, [gfpgan, RestoreFormer]")
     parser.add_argument('--background_enhancer',  type=str, default=None, help="background enhancer, [realesrgan]")
+    parser.add_argument('--profile', action='store_true', help='print timing breakdown for major stages')
     parser.add_argument("--cpu", dest="cpu", action="store_true") 
     parser.add_argument("--face3dvis", action="store_true", help="generate 3d face and 3d landmarks") 
     parser.add_argument("--still", action="store_true", help="can crop back to the original videos for the full body aniamtion") 

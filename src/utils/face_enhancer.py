@@ -163,14 +163,49 @@ class AdaptiveMemoryManager:
 
 class TrueBatchGFPGANEnhancer:
     """True parallel batch processing GFPGAN enhancer for maximum VRAM utilization"""
-    
+
     def __init__(self, method='gfpgan'):
         self.method = method
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.gfpgan_model = None
         self.streams = []
         self.memory_manager = AdaptiveMemoryManager()
+
+        # Calculate dynamic batch size based on available VRAM
+        self.batch_size = self._calculate_dynamic_batch_size()
+
         self._initialize_parallel_gfpgan()
+
+    def _calculate_dynamic_batch_size(self):
+        """Calculate optimal batch size based on available VRAM - scales automatically"""
+        if not torch.cuda.is_available():
+            return 4  # Conservative for CPU
+
+        gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        available_memory_gb = gpu_memory_gb * 0.85  # Use 85% of VRAM for safety
+
+        # Estimate memory per image (GFPGAN + overhead)
+        # GFPGAN typically needs ~2-3GB per image for processing
+        memory_per_image_gb = 2.5  # Conservative estimate
+
+        # Calculate optimal batch size
+        optimal_batch_size = max(1, int(available_memory_gb / memory_per_image_gb))
+
+        # Cap at reasonable maximum (too large batches can cause other issues)
+        max_reasonable_batch = 64
+
+        # For very large GPUs (A100, H100), allow larger batches
+        if gpu_memory_gb >= 40:  # A100/H100 range
+            max_reasonable_batch = 128
+        elif gpu_memory_gb >= 24:  # RTX 4090/3090 range
+            max_reasonable_batch = 96
+        elif gpu_memory_gb >= 16:  # RTX 4080/3080 range
+            max_reasonable_batch = 80
+
+        final_batch_size = min(optimal_batch_size, max_reasonable_batch)
+
+        print(f"🚀 Dynamic batch size: {final_batch_size} (GPU: {gpu_memory_gb:.1f}GB, available: {available_memory_gb:.1f}GB)")
+        return final_batch_size
     
     def _initialize_parallel_gfpgan(self):
         """Initialize GFPGAN with parallel processing capabilities and memory management"""
@@ -780,7 +815,7 @@ class TrueBatchGFPGANEnhancer:
                 raise e
     
     def _enhance_tensor_batch_safe(self, batch_tensor):
-        """Enhance batch tensor with OOM protection and memory monitoring"""
+        """Enhance batch tensor with OOM protection - GFPGAN processes one image at a time"""
         if batch_tensor is None:
             return None
         
@@ -788,58 +823,87 @@ class TrueBatchGFPGANEnhancer:
             # Monitor memory before processing
             initial_memory = torch.cuda.memory_allocated() / 1e9
             
-            # Process with maximum memory efficiency
+            # GFPGAN processes images individually, not as batches
+            # So we need to process each image separately but efficiently
+            enhanced_images = []
+            
             with torch.no_grad(), torch.cuda.amp.autocast():
-                
-                # Pre-allocate output tensor for in-place operations
-                output_shape = batch_tensor.shape
-                
-                # Check if we have enough memory for output tensor
-                output_memory_needed = np.prod(output_shape) * 4 / 1e9  # 4 bytes per float32
-                available_memory = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1e9
-                
-                if output_memory_needed > available_memory * 0.8:
-                    print(f"   ⚠️  Not enough memory for output tensor, using chunked processing")
-                    return self._enhance_tensor_chunked(batch_tensor)
-                
-                enhanced_batch = torch.empty_like(batch_tensor, device=self.device)
-                
-                # Process in chunks if batch is very large to avoid OOM
-                chunk_size = min(8, batch_tensor.shape[0])  # Process 8 images at a time max
-                
-                for i in range(0, batch_tensor.shape[0], chunk_size):
-                    end_idx = min(i + chunk_size, batch_tensor.shape[0])
-                    chunk = batch_tensor[i:end_idx]
-                    
-                    # Process chunk through GFPGAN
+                # Process each image in the batch individually
+                for i in range(batch_tensor.shape[0]):
                     try:
-                        enhanced_chunk = self.gfpgan_model(chunk)
-                        enhanced_batch[i:end_idx] = enhanced_chunk
+                        # Extract single image tensor
+                        single_img_tensor = batch_tensor[i:i+1]  # Keep batch dimension
+                        
+                        # Convert tensor back to numpy for GFPGAN
+                        # GFPGAN expects HWC format BGR numpy array
+                        img_np = single_img_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                        img_np = (img_np * 255).astype(np.uint8)
+                        
+                        # GFPGAN processes BGR images
+                        if img_np.shape[-1] == 3:
+                            img_bgr = img_np  # Already BGR from our tensor prep
+                        else:
+                            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                        
+                        # Process through GFPGAN enhance method (not model directly)
+                        _, _, enhanced_bgr = self.gfpgan.enhance(
+                            img_bgr, 
+                            has_aligned=False, 
+                            only_center_face=False, 
+                            paste_back=True
+                        )
+                        
+                        # Convert back to tensor format
+                        enhanced_rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+                        enhanced_tensor = torch.from_numpy(enhanced_rgb).float().to(self.device)
+                        enhanced_tensor = enhanced_tensor.div(255.0).permute(2, 0, 1).unsqueeze(0)
+                        
+                        enhanced_images.append(enhanced_tensor)
+                        
+                        # Clear memory periodically
+                        if i % 4 == 0:
+                            torch.cuda.empty_cache()
+                            
                     except RuntimeError as e:
                         if "out of memory" in str(e):
-                            # Reduce chunk size and retry
+                            print(f"   ⚠️  OOM on image {i}, skipping...")
+                            # Use original image if enhancement fails
+                            enhanced_images.append(batch_tensor[i:i+1])
                             torch.cuda.empty_cache()
-                            chunk_size = max(1, chunk_size // 2)
-                            print(f"   ⚠️  Reduced chunk size to {chunk_size} due to memory constraints")
-                            
-                            # Retry with smaller chunk
-                            enhanced_chunk = self.gfpgan_model(chunk[:chunk_size])
-                            enhanced_batch[i:i+chunk_size] = enhanced_chunk
                         else:
-                            raise e
+                            print(f"   ⚠️  Error on image {i}: {e}, using original")
+                            enhanced_images.append(batch_tensor[i:i+1])
+                
+                # Concatenate all enhanced images
+                if enhanced_images:
+                    return torch.cat(enhanced_images, dim=0)
+                else:
+                    return batch_tensor  # Return original if all failed
             
-            return enhanced_batch
-            
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"   ⚠️  OOM during tensor enhancement, using fallback")
-                torch.cuda.empty_cache()
-                return None
-            else:
-                raise e
+        except Exception as e:
+            print(f"   ⚠️  Batch enhancement failed: {e}, using original images")
+            return batch_tensor
+    
+    def _enhance_tensor_batch(self, batch_tensor):
+        """Standard tensor enhancement for non-safe processing"""
+        if batch_tensor is None:
+            return None
+        
+        # Use the safe version since GFPGAN has the same limitations
+        return self._enhance_tensor_batch_safe(batch_tensor)
+    
+    def _prepare_batch_tensors(self, batch_images):
+        """Standard tensor preparation for non-safe processing"""
+        # Use the safe version for consistency
+        return self._prepare_batch_tensors_safe(batch_images)
+    
+    def _tensors_to_images(self, enhanced_tensors):
+        """Standard tensor to image conversion"""
+        # Use the safe version for consistency
+        return self._tensors_to_images_safe(enhanced_tensors)
     
     def _enhance_tensor_chunked(self, batch_tensor):
-        """Enhanced tensor processing in very small chunks"""
+        """Enhanced tensor processing in very small chunks - GFPGAN processes individually"""
         if batch_tensor is None:
             return None
         
@@ -848,6 +912,42 @@ class TrueBatchGFPGANEnhancer:
         
         for i in range(0, batch_tensor.shape[0], chunk_size):
             end_idx = min(i + chunk_size, batch_tensor.shape[0])
+            chunk = batch_tensor[i:end_idx]
+            
+            try:
+                # Process each image in chunk individually (GFPGAN limitation)
+                chunk_enhanced = []
+                for j in range(chunk.shape[0]):
+                    single_img = chunk[j:j+1]
+                    
+                    # Convert to numpy for GFPGAN processing
+                    img_np = single_img.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                    img_np = (img_np * 255).astype(np.uint8)
+                    
+                    # Process through GFPGAN enhance method
+                    _, _, enhanced_bgr = self.gfpgan.enhance(
+                        img_np, has_aligned=False, only_center_face=False, paste_back=True
+                    )
+                    
+                    # Convert back to tensor
+                    enhanced_rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+                    enhanced_tensor = torch.from_numpy(enhanced_rgb).float().to(self.device)
+                    enhanced_tensor = enhanced_tensor.div(255.0).permute(2, 0, 1).unsqueeze(0)
+                    chunk_enhanced.append(enhanced_tensor)
+                
+                # Concatenate chunk results
+                if chunk_enhanced:
+                    enhanced_chunks.append(torch.cat(chunk_enhanced, dim=0))
+                    
+            except Exception as e:
+                print(f"   ⚠️  Chunk {i}-{end_idx} failed: {e}, using original")
+                enhanced_chunks.append(chunk)
+        
+        # Concatenate all chunks
+        if enhanced_chunks:
+            return torch.cat(enhanced_chunks, dim=0)
+        else:
+            return batch_tensor
             chunk = batch_tensor[i:end_idx]
             
             try:
@@ -965,34 +1065,24 @@ class HighVRAMFaceEnhancer:
     
     def enhance_batch_ultra(self, images, batch_size=32):
         """Ultra-fast batch processing with TRUE parallel GPU utilization"""
-        
-        # Determine ultra-aggressive batch size for maximum VRAM usage
-        if torch.cuda.is_available():
-            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-            if gpu_memory_gb >= 14:
-                batch_size = min(64, batch_size)  # Massive batches for 15GB+
-                print(f"🚀 MAXIMUM VRAM MODE: {batch_size} batch size for {gpu_memory_gb:.1f}GB")
-            elif gpu_memory_gb >= 10:
-                batch_size = min(48, batch_size)
-                print(f"🚀 HIGH VRAM MODE: {batch_size} batch size for {gpu_memory_gb:.1f}GB")
-            else:
-                batch_size = min(32, batch_size)
-                print(f"🚀 STANDARD MODE: {batch_size} batch size for {gpu_memory_gb:.1f}GB")
-        
+
+        # Calculate dynamic batch size based on available VRAM
+        batch_size = self._calculate_ultra_batch_size(batch_size)
+
         # Setup for maximum GPU utilization
         if torch.cuda.is_available():
             # Use 95% of VRAM for processing
             torch.cuda.set_per_process_memory_fraction(0.95)
-            
+
             # Enable all optimizations
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             torch.backends.cudnn.deterministic = False
-            
+
             # Pre-warm GPU
             torch.cuda.empty_cache()
-            
+
         try:
             # Use true batch processing for maximum efficiency
             enhanced_images = self.true_batch_enhancer.enhance_batch_parallel(images, batch_size=batch_size)
@@ -1004,6 +1094,40 @@ class HighVRAMFaceEnhancer:
             
             # Fallback to optimized sequential processing
             return self._fallback_batch_enhance(images, batch_size // 2)
+    
+    def _calculate_ultra_batch_size(self, requested_batch_size=32):
+        """Calculate ultra-aggressive batch size based on available VRAM - scales automatically"""
+        if not torch.cuda.is_available():
+            return min(8, requested_batch_size)
+
+        gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        available_memory_gb = gpu_memory_gb * 0.95  # Use 95% for ultra mode
+
+        # Estimate memory per image (more aggressive than standard mode)
+        memory_per_image_gb = 2.0  # More aggressive estimate for ultra mode
+
+        # Calculate optimal batch size
+        optimal_batch_size = max(1, int(available_memory_gb / memory_per_image_gb))
+
+        # Scale maximum based on GPU size
+        if gpu_memory_gb >= 80:  # A100 80GB, H100
+            max_batch = 256
+        elif gpu_memory_gb >= 40:  # A100 40GB, RTX A6000
+            max_batch = 192
+        elif gpu_memory_gb >= 24:  # RTX 4090/3090
+            max_batch = 128
+        elif gpu_memory_gb >= 16:  # RTX 4080/3080
+            max_batch = 96
+        elif gpu_memory_gb >= 12:  # RTX 4070/3070
+            max_batch = 80
+        elif gpu_memory_gb >= 8:   # RTX 3060/4060
+            max_batch = 64
+        else:
+            max_batch = 48
+
+        final_batch_size = min(optimal_batch_size, max_batch, requested_batch_size)
+        print(f"🚀 ULTRA VRAM MODE: {final_batch_size} batch size for {gpu_memory_gb:.1f}GB GPU")
+        return final_batch_size
     
     def _fallback_batch_enhance(self, images, batch_size):
         """Fallback batch enhancement with memory optimization"""
@@ -1038,16 +1162,19 @@ class HighVRAMFaceEnhancer:
 
 # Update the main enhancer factory function
 def create_optimized_enhancer(method='gfpgan', optimization_level="medium"):
-    """Factory function to create the best enhancer for the system"""
-    
+    """Factory function to create the best enhancer for the system - scales automatically"""
+
     if torch.cuda.is_available():
         gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-        
-        # Use HighVRAMFaceEnhancer for systems with 12GB+ VRAM
-        if gpu_memory_gb >= 12 and optimization_level in ["medium", "low"]:
+
+        # Use HighVRAMFaceEnhancer for systems that can benefit from parallel processing
+        # Minimum requirement: enough memory for at least 8 images in parallel
+        min_memory_for_parallel_gb = 8 * 2.5  # 8 images * 2.5GB per image estimate
+
+        if gpu_memory_gb >= min_memory_for_parallel_gb and optimization_level in ["medium", "low"]:
             print(f"🚀 Detected {gpu_memory_gb:.1f}GB VRAM - Using HIGH VRAM optimizer")
             return HighVRAMFaceEnhancer(method=method)
-    
+
     # Use standard optimizer for other cases
     return OptimizedFaceEnhancer(method=method, optimization_level=optimization_level)
 
@@ -1126,27 +1253,17 @@ class OptimizedFaceEnhancer:
         if not isinstance(images, list) and os.path.isfile(images):
             images = load_video_to_cv2(images)
         
-        # Aggressive batch size optimization for high VRAM systems
+        # Dynamic batch size optimization based on available VRAM
         if torch.cuda.is_available():
             gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
             print(f"GPU Memory Available: {gpu_memory_gb:.1f}GB")
-            
-            if gpu_memory_gb >= 14:  # 15GB+ cards (RTX 4090, etc.)
-                optimal_batch_size = 24
-            elif gpu_memory_gb >= 10:  # 12GB cards (RTX 4070 Ti, etc.)
-                optimal_batch_size = 16
-            elif gpu_memory_gb >= 8:   # 8-10GB cards
-                optimal_batch_size = 12
-            elif gpu_memory_gb >= 6:   # 6-8GB cards
-                optimal_batch_size = 8
-            elif gpu_memory_gb >= 4:   # 4-6GB cards
-                optimal_batch_size = 4
-            else:
-                optimal_batch_size = 2
-            
+
+            # Calculate optimal batch size dynamically
+            optimal_batch_size = self._calculate_optimal_batch_size(gpu_memory_gb)
+
             # Use the larger of provided batch_size and optimal_batch_size
             batch_size = max(batch_size, optimal_batch_size)
-            print(f"Using optimized batch size: {batch_size} (was {batch_size} requested)")
+            print(f"Using optimized batch size: {batch_size} (optimal: {optimal_batch_size})")
         
         # Setup memory optimizations
         if torch.cuda.is_available():
@@ -1233,18 +1350,11 @@ class OptimizedFaceEnhancer:
     def _sequential_batch_enhance(self, images, batch_size):
         """Optimized batch enhancement with true GPU batch processing"""
         enhanced_images = []
-        
-        # Determine optimal batch size for GPU memory
+
+        # Use dynamic batch size calculation
         if torch.cuda.is_available():
             gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-            if gpu_memory_gb >= 12:
-                max_batch_size = 16
-            elif gpu_memory_gb >= 8:
-                max_batch_size = 12
-            elif gpu_memory_gb >= 6:
-                max_batch_size = 8
-            else:
-                max_batch_size = 4
+            max_batch_size = self._calculate_optimal_batch_size(gpu_memory_gb)
             batch_size = min(batch_size, max_batch_size)
         
         for batch_start in tqdm(range(0, len(images), batch_size), 'Face Enhancer (batch):'):
@@ -1342,6 +1452,37 @@ class OptimizedFaceEnhancer:
                     batch_enhanced.append(img)
         
         return batch_enhanced
+    
+    def _calculate_optimal_batch_size(self, gpu_memory_gb):
+        """Calculate optimal batch size based on GPU memory - scales automatically"""
+        # Estimate memory per image (GFPGAN processing overhead)
+        memory_per_image_gb = 2.2  # Conservative estimate for GFPGAN
+
+        # Calculate available memory for processing (leave 15% buffer)
+        available_memory_gb = gpu_memory_gb * 0.85
+
+        # Calculate optimal batch size
+        optimal_batch_size = max(1, int(available_memory_gb / memory_per_image_gb))
+
+        # Apply reasonable caps based on GPU size
+        if gpu_memory_gb >= 40:  # A100/H100
+            max_batch = 48
+        elif gpu_memory_gb >= 24:  # RTX 4090/3090
+            max_batch = 32
+        elif gpu_memory_gb >= 16:  # RTX 4080/3080
+            max_batch = 24
+        elif gpu_memory_gb >= 12:  # RTX 4070/3070
+            max_batch = 20
+        elif gpu_memory_gb >= 8:   # RTX 3060/4060
+            max_batch = 16
+        elif gpu_memory_gb >= 6:   # RTX 3050/4050
+            max_batch = 12
+        elif gpu_memory_gb >= 4:   # GTX 1660/2060
+            max_batch = 8
+        else:
+            max_batch = 4
+
+        return min(optimal_batch_size, max_batch)
 
 
 def fast_enhancer_generator_with_len(images, method='gfpgan', bg_upsampler='realesrgan', 
@@ -1517,10 +1658,37 @@ class EnhancementPresets:
     
     @classmethod
     def get_preset(cls, preset_name):
-        """Get enhancement preset configuration"""
+        """Get enhancement preset configuration with dynamic batch sizing"""
         if preset_name not in cls.PRESETS:
             raise ValueError(f"Unknown preset: {preset_name}. Available: {list(cls.PRESETS.keys())}")
-        return cls.PRESETS[preset_name].copy()
+
+        config = cls.PRESETS[preset_name].copy()
+
+        # Calculate dynamic batch size based on available GPU memory
+        if torch.cuda.is_available():
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+
+            # Base batch size multiplier for each preset
+            multipliers = {
+                "ultra_fast": 2.0,  # Very aggressive batching
+                "fast": 1.5,        # Aggressive batching
+                "balanced": 1.0,    # Standard batching
+                "quality": 0.5      # Conservative batching
+            }
+
+            base_batch = config['batch_size']
+            multiplier = multipliers.get(preset_name, 1.0)
+
+            # Calculate memory-based batch size
+            memory_per_image_gb = 2.2
+            available_memory_gb = gpu_memory_gb * 0.8  # 80% utilization
+            memory_based_batch = max(1, int(available_memory_gb / memory_per_image_gb))
+
+            # Apply preset multiplier and cap
+            dynamic_batch = min(int(base_batch * multiplier), memory_based_batch)
+            config['batch_size'] = max(1, dynamic_batch)
+
+        return config
     
     @classmethod
     def list_presets(cls):

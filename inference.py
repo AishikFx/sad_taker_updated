@@ -11,13 +11,12 @@ from src.facerender.animate import AnimateFromCoeff
 from src.generate_batch import get_data
 from src.generate_facerender_batch import get_facerender_data
 from src.utils.init_path import init_path
-from src.utils.optimization_config import OptimizationConfig, PerformanceMonitor
+from optimization_config import OptimizationConfig, PerformanceMonitor
 
 def main(args):
     # Initialize optimization configuration
     if hasattr(args, 'optimization_preset') and args.optimization_preset:
         opt_config = OptimizationConfig(args.optimization_preset)
-        opt_config.print_performance_estimate()
         optimization_level = opt_config.get_optimization_level()
     else:
         optimization_level = getattr(args, 'optimization_level', 'medium')

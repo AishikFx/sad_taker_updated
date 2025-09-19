@@ -21,7 +21,6 @@ from src.facerender.modules.make_animation_fast import make_animation_fast
 from src.utils.fast_seamless_clone import fast_seamless_clone, process_video_frames_fast 
 
 from pydub import AudioSegment 
-from src.utils.face_enhancer import enhancer_generator_with_len, enhancer_list
 # Import optimized face enhancer functions
 from src.utils.face_enhancer import fast_enhancer_generator_with_len, fast_enhancer_list
 from src.utils.paste_pic import paste_pic
@@ -298,17 +297,17 @@ class AnimateFromCoeff():
                 except Exception as e:
                     print(f"Fast enhancer failed ({e}), falling back to original enhancer")
                     try:
-                        enhanced_images_gen_with_len = enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                        enhanced_images_gen_with_len = fast_enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
                         imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
                     except:
-                        enhanced_images_gen_with_len = enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                        enhanced_images_gen_with_len = fast_enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
                         imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
             else:
                 try:
-                    enhanced_images_gen_with_len = enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                    enhanced_images_gen_with_len = fast_enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
                     imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
                 except:
-                    enhanced_images_gen_with_len = enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                    enhanced_images_gen_with_len = fast_enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
                     imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
             
             save_video_with_watermark(enhanced_path, new_audio_path, av_path_enhancer, watermark= False)

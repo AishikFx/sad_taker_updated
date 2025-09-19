@@ -286,7 +286,6 @@ if __name__ == '__main__':
     # Handle preset listing
     if args.list_presets:
         OptimizationConfig.list_presets()
-        return
 
     if torch.cuda.is_available() and not args.cpu:
         args.device = "cuda"

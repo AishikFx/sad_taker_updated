@@ -35,6 +35,8 @@ def main(args):
     torch.set_grad_enabled(False)
 
     pic_path = args.source_image
+    print(f'DEBUG: args.source_image = {args.source_image}')
+    print(f'DEBUG: pic_path = {pic_path}')
     audio_path = args.driven_audio
     save_dir = os.path.join(args.result_dir, strftime("%Y_%m_%d_%H.%M.%S"))
     os.makedirs(save_dir, exist_ok=True)
@@ -74,8 +76,16 @@ def main(args):
         monitor.start_timing("3DMM Extraction (source image)")
     
     # Resolve and log the pic_path being used for preprocessing
-    resolved_pic_path = os.path.abspath(os.path.expanduser(pic_path))
+    # More robust path resolution
+    if os.path.isabs(pic_path):
+        resolved_pic_path = pic_path
+    else:
+        # Convert relative path to absolute path relative to current working directory
+        resolved_pic_path = os.path.abspath(pic_path)
+    
     print(f'Using source image path (resolved): {resolved_pic_path}')
+    print(f'Original pic_path: {pic_path}')
+    print(f'Current working directory: {os.getcwd()}')
     first_coeff_path, crop_pic_path, crop_info =  preprocess_model.generate(resolved_pic_path, first_frame_dir, args.preprocess,\
                                                                              source_image_flag=True, pic_size=args.size)
     
@@ -281,6 +291,11 @@ if __name__ == '__main__':
     parser.add_argument('--z_far', type=float, default=15.)
 
     args = parser.parse_args()
+    
+    # DEBUG: Print parsed arguments
+    print(f'DEBUG: Parsed args.source_image = {args.source_image}')
+    print(f'DEBUG: Parsed args.driven_audio = {args.driven_audio}')
+    print(f'DEBUG: Parsed args.optimization_preset = {args.optimization_preset}')
     
     # Handle preset listing
     if args.list_presets:

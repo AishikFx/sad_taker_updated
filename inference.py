@@ -11,8 +11,20 @@ from src.facerender.animate import AnimateFromCoeff
 from src.generate_batch import get_data
 from src.generate_facerender_batch import get_facerender_data
 from src.utils.init_path import init_path
+from src.utils.optimization_config import OptimizationConfig, PerformanceMonitor
 
 def main(args):
+    # Initialize optimization configuration
+    if hasattr(args, 'optimization_preset') and args.optimization_preset:
+        opt_config = OptimizationConfig(args.optimization_preset)
+        opt_config.print_performance_estimate()
+        optimization_level = opt_config.get_optimization_level()
+    else:
+        optimization_level = getattr(args, 'optimization_level', 'medium')
+    
+    # Initialize performance monitor if profiling
+    monitor = PerformanceMonitor() if getattr(args, 'profile', False) else None
+    
     # Enable optimizations for better GPU utilization
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
@@ -46,7 +58,7 @@ def main(args):
 
     audio_to_coeff = Audio2Coeff(sadtalker_paths,  device)
     
-    animate_from_coeff = AnimateFromCoeff(sadtalker_paths, device)
+    animate_from_coeff = AnimateFromCoeff(sadtalker_paths, device, optimization_level=optimization_level)
 
     # profiling
     profile = getattr(args, 'profile', False)
@@ -59,15 +71,21 @@ def main(args):
     # GPU synchronization for accurate profiling
     if profile and torch.cuda.is_available():
         torch.cuda.synchronize()
-    t0 = time.time()
+    if monitor:
+        monitor.start_timing("3DMM Extraction (source image)")
     
-    first_coeff_path, crop_pic_path, crop_info =  preprocess_model.generate(pic_path, first_frame_dir, args.preprocess,\
+    # Resolve and log the pic_path being used for preprocessing
+    resolved_pic_path = os.path.abspath(os.path.expanduser(pic_path))
+    print(f'Using source image path (resolved): {resolved_pic_path}')
+    first_coeff_path, crop_pic_path, crop_info =  preprocess_model.generate(resolved_pic_path, first_frame_dir, args.preprocess,\
                                                                              source_image_flag=True, pic_size=args.size)
     
     if profile and torch.cuda.is_available():
         torch.cuda.synchronize()
-    t1 = time.time()
-    if profile:
+    if monitor:
+        monitor.end_timing("3DMM Extraction (source image)")
+    elif profile:
+        t1 = time.time()
         print(f'[profile] 3DMM extraction time: {t1-t0:.3f}s')
     
     if first_coeff_path is None:
@@ -234,6 +252,13 @@ if __name__ == '__main__':
     parser.add_argument('--enhancer',  type=str, default=None, help="Face enhancer, [gfpgan, RestoreFormer]. Warning: Increases VRAM usage significantly")
     parser.add_argument('--background_enhancer',  type=str, default=None, help="background enhancer, [realesrgan]. Warning: Increases VRAM usage significantly")
     parser.add_argument('--profile', action='store_true', help='print timing breakdown for major stages')
+    
+    # NEW: Performance optimization arguments
+    parser.add_argument('--optimization_preset', type=str, choices=['ultra_fast', 'fast', 'balanced', 'quality'], 
+                       default='balanced', help="Performance optimization preset")
+    parser.add_argument('--optimization_level', type=str, choices=['low', 'medium', 'high', 'extreme'], 
+                       help="Manual optimization level (overrides preset)")
+    parser.add_argument('--list_presets', action='store_true', help="List available optimization presets and exit")
     parser.add_argument("--cpu", dest="cpu", action="store_true") 
     parser.add_argument("--face3dvis", action="store_true", help="generate 3d face and 3d landmarks") 
     parser.add_argument("--still", action="store_true", help="can crop back to the original videos for the full body aniamtion") 
@@ -257,6 +282,11 @@ if __name__ == '__main__':
     parser.add_argument('--z_far', type=float, default=15.)
 
     args = parser.parse_args()
+    
+    # Handle preset listing
+    if args.list_presets:
+        OptimizationConfig.list_presets()
+        return
 
     if torch.cuda.is_available() and not args.cpu:
         args.device = "cuda"

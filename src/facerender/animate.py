@@ -15,11 +15,18 @@ import torchvision
 from src.facerender.modules.keypoint_detector import HEEstimator, KPDetector
 from src.facerender.modules.mapping import MappingNet
 from src.facerender.modules.generator import OcclusionAwareGenerator, OcclusionAwareSPADEGenerator
-from src.facerender.modules.make_animation import make_animation 
+from src.facerender.modules.make_animation import make_animation
+# Import optimized versions
+from src.facerender.modules.make_animation_fast import make_animation_fast
+from src.utils.fast_seamless_clone import fast_seamless_clone, process_video_frames_fast 
 
 from pydub import AudioSegment 
 from src.utils.face_enhancer import enhancer_generator_with_len, enhancer_list
+# Import optimized face enhancer functions
+from src.utils.face_enhancer import fast_enhancer_generator_with_len, fast_enhancer_list
 from src.utils.paste_pic import paste_pic
+# Import optimized paste functions  
+from src.utils.paste_pic import fast_paste_pic, OptimizedPastePic
 from src.utils.videoio import save_video_with_watermark
 
 try:
@@ -30,12 +37,14 @@ except:
 
 class AnimateFromCoeff():
 
-    def __init__(self, sadtalker_path, device):
+    def __init__(self, sadtalker_path, device, optimization_level="medium"):
         # Keep the device optimization from new code but don't over-optimize
         self.use_cuda = torch.cuda.is_available() and device != 'cpu'
         self.device = torch.device('cuda' if self.use_cuda else 'cpu')
+        self.optimization_level = optimization_level
         
         print(f"Initializing AnimateFromCoeff on device: {self.device}")
+        print(f"Optimization level: {optimization_level}")
 
         with open(sadtalker_path['facerender_yaml']) as f:
             config = yaml.safe_load(f)
@@ -160,7 +169,11 @@ class AnimateFromCoeff():
 
         return checkpoint['epoch']
 
-    def generate(self, x, video_save_dir, pic_path, crop_info, enhancer=None, background_enhancer=None, preprocess='crop', img_size=256, profile=False, batch_size=1, **kwargs):
+    def generate(self, x, video_save_dir, pic_path, crop_info, enhancer=None, background_enhancer=None, preprocess='crop', img_size=256, profile=False, batch_size=1, optimization_level=None, **kwargs):
+        
+        # Use instance optimization level if not overridden
+        if optimization_level is None:
+            optimization_level = self.optimization_level
 
         # Use the old, working tensor processing approach
         source_image=x['source_image'].type(torch.FloatTensor)
@@ -188,10 +201,18 @@ class AnimateFromCoeff():
 
         frame_num = x['frame_num']
 
-        # Keep the original make_animation call - don't over-optimize this part
-        predictions_video = make_animation(source_image, source_semantics, target_semantics,
-                                        self.generator, self.kp_extractor, self.he_estimator, self.mapping, 
-                                        yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp = True)
+        # Use optimized make_animation based on optimization level
+        if optimization_level in ["high", "extreme"]:
+            print(f"Using fast Face Renderer (optimization: {optimization_level})")
+            predictions_video = make_animation_fast(source_image, source_semantics, target_semantics,
+                                            self.generator, self.kp_extractor, self.he_estimator, self.mapping, 
+                                            yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp = True, 
+                                            optimization_level=optimization_level)
+        else:
+            # Keep the original make_animation call for compatibility
+            predictions_video = make_animation(source_image, source_semantics, target_semantics,
+                                            self.generator, self.kp_extractor, self.he_estimator, self.mapping, 
+                                            yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp = True)
 
         # Use the original, working tensor-to-numpy conversion
         predictions_video = predictions_video.reshape((-1,)+predictions_video.shape[2:])
@@ -232,13 +253,29 @@ class AnimateFromCoeff():
         save_video_with_watermark(path, new_audio_path, av_path, watermark= False)
         print(f'The generated video is named {video_save_dir}/{video_name}') 
 
-        # CRITICAL: This is where the full video gets created - don't break this logic
+        # CRITICAL: This is where the full video gets created - use optimized paste if available
         if 'full' in preprocess.lower():
             # only add watermark to the full image.
             video_name_full = x['video_name']  + '_full.mp4'
             full_video_path = os.path.join(video_save_dir, video_name_full)
             return_path = full_video_path
-            paste_pic(path, pic_path, crop_info, new_audio_path, full_video_path, extended_crop= True if 'ext' in preprocess.lower() else False)
+            
+            # Use optimized paste based on optimization level
+            if optimization_level in ["high", "extreme"]:
+                print(f"Using fast paste processing (optimization: {optimization_level})")
+                try:
+                    # Try optimized paste first
+                    optimizer = OptimizedPastePic(optimization_level=optimization_level, 
+                                                blend_method="fast" if optimization_level == "extreme" else "balanced")
+                    optimizer.paste_video(path, pic_path, crop_info, new_audio_path, full_video_path, 
+                                        extended_crop=True if 'ext' in preprocess.lower() else False)
+                except Exception as e:
+                    print(f"Fast paste failed ({e}), falling back to original paste_pic")
+                    paste_pic(path, pic_path, crop_info, new_audio_path, full_video_path, 
+                            extended_crop=True if 'ext' in preprocess.lower() else False)
+            else:
+                paste_pic(path, pic_path, crop_info, new_audio_path, full_video_path, 
+                        extended_crop=True if 'ext' in preprocess.lower() else False)
             print(f'The generated video is named {video_save_dir}/{video_name_full}') 
         else:
             full_video_path = av_path 
@@ -250,12 +287,29 @@ class AnimateFromCoeff():
             av_path_enhancer = os.path.join(video_save_dir, video_name_enhancer) 
             return_path = av_path_enhancer
 
-            try:
-                enhanced_images_gen_with_len = enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
-                imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
-            except:
-                enhanced_images_gen_with_len = enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
-                imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+            # Use optimized face enhancer based on optimization level  
+            if optimization_level in ["high", "extreme"]:
+                print(f"Using fast face enhancer (optimization: {optimization_level})")
+                try:
+                    enhanced_images_gen_with_len = fast_enhancer_generator_with_len(
+                        full_video_path, method=enhancer, bg_upsampler=background_enhancer,
+                        optimization_level=optimization_level, batch_size=8 if optimization_level == "extreme" else 4)
+                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+                except Exception as e:
+                    print(f"Fast enhancer failed ({e}), falling back to original enhancer")
+                    try:
+                        enhanced_images_gen_with_len = enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                        imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+                    except:
+                        enhanced_images_gen_with_len = enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                        imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+            else:
+                try:
+                    enhanced_images_gen_with_len = enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+                except:
+                    enhanced_images_gen_with_len = enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
             
             save_video_with_watermark(enhanced_path, new_audio_path, av_path_enhancer, watermark= False)
             print(f'The generated video is named {video_save_dir}/{video_name_enhancer}')

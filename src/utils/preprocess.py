@@ -61,17 +61,34 @@ class CropAndExtract():
         self.device = device
     
     def generate(self, input_path, save_dir, crop_or_resize='crop', source_image_flag=False, pic_size=256):
+        # Normalize and resolve input path (support ~ and relative paths)
+        input_path = os.path.expanduser(input_path)
+        input_path = os.path.abspath(input_path)
 
-        pic_name = os.path.splitext(os.path.split(input_path)[-1])[0]  
+        # If a directory is provided, try to find the first image or video inside
+        if os.path.isdir(input_path):
+            exts_images = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff')
+            exts_videos = ('.mp4', '.avi', '.mov', '.mkv')
+            files = sorted(os.listdir(input_path))
+            chosen = None
+            for f in files:
+                if f.lower().endswith(exts_images + exts_videos):
+                    chosen = os.path.join(input_path, f)
+                    break
+            if chosen is None:
+                raise ValueError(f'input_path is a directory but contains no supported image/video files: {input_path}')
+            input_path = chosen
 
-        landmarks_path =  os.path.join(save_dir, pic_name+'_landmarks.txt') 
-        coeff_path =  os.path.join(save_dir, pic_name+'.mat')  
-        png_path =  os.path.join(save_dir, pic_name+'.png')  
+        pic_name = os.path.splitext(os.path.split(input_path)[-1])[0]
 
-        #load input
+        landmarks_path =  os.path.join(save_dir, pic_name + '_landmarks.txt')
+        coeff_path =  os.path.join(save_dir, pic_name + '.mat')
+        png_path =  os.path.join(save_dir, pic_name + '.png')
+
+        # load input (file must exist)
         if not os.path.isfile(input_path):
-            raise ValueError('input_path must be a valid path to video/image file')
-        elif input_path.split('.')[-1] in ['jpg', 'png', 'jpeg']:
+            raise ValueError(f"input_path must be a valid path to video/image file. Resolved path: {input_path}")
+        elif input_path.split('.')[-1].lower() in ['jpg', 'png', 'jpeg', 'bmp', 'tiff']:
             # loader for first frame
             full_frames = [cv2.imread(input_path)]
             fps = 25

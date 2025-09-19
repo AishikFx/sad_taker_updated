@@ -44,8 +44,9 @@ class OptimizationConfig:
             },
             "face_enhancer": {
                 "method": "gfpgan",
-                "batch_size": 8,
-                "optimization_level": "high"
+                "batch_size": 16,  # Increased for better VRAM utilization
+                "optimization_level": "high",
+                "use_high_vram_optimizer": True
             },
             "description": "High speed, good quality - 5x faster"
         },
@@ -64,8 +65,9 @@ class OptimizationConfig:
             },
             "face_enhancer": {
                 "method": "gfpgan",
-                "batch_size": 4,
-                "optimization_level": "medium"
+                "batch_size": 12,  # Increased for better VRAM utilization
+                "optimization_level": "medium",
+                "use_high_vram_optimizer": True
             },
             "description": "Balanced speed and quality - 3x faster"
         },
@@ -84,8 +86,9 @@ class OptimizationConfig:
             },
             "face_enhancer": {
                 "method": "RestoreFormer",
-                "batch_size": 2,
-                "optimization_level": "low"
+                "batch_size": 8,  # Even quality mode can use higher batch sizes
+                "optimization_level": "low",
+                "use_high_vram_optimizer": True
             },
             "description": "Best quality, slower processing - original speed"
         }

@@ -22,7 +22,8 @@ from src.utils.fast_seamless_clone import fast_seamless_clone, process_video_fra
 
 from pydub import AudioSegment 
 # Import optimized face enhancer functions
-from src.utils.face_enhancer import fast_enhancer_generator_with_len, fast_enhancer_list
+from src.utils.face_enhancer import fast_enhancer_generator_with_len, fast_enhancer_list, create_optimized_enhancer, HighVRAMFaceEnhancer
+from src.utils.videoio import load_video_to_cv2
 from src.utils.paste_pic import paste_pic
 # Import optimized paste functions  
 from src.utils.paste_pic import fast_paste_pic, OptimizedPastePic
@@ -265,7 +266,7 @@ class AnimateFromCoeff():
                 try:
                     # Try optimized paste first
                     optimizer = OptimizedPastePic(optimization_level=optimization_level, 
-                                                blend_method="fast" if optimization_level == "extreme" else "balanced")
+                                                blend_method="simple" if optimization_level == "extreme" else "gaussian")
                     optimizer.paste_video(path, pic_path, crop_info, new_audio_path, full_video_path, 
                                         extended_crop=True if 'ext' in preprocess.lower() else False)
                 except Exception as e:
@@ -287,12 +288,41 @@ class AnimateFromCoeff():
             return_path = av_path_enhancer
 
             # Use optimized face enhancer based on optimization level  
-            if optimization_level in ["high", "extreme"]:
-                print(f"Using fast face enhancer (optimization: {optimization_level})")
+            # Determine optimal batch size based on VRAM and optimization level
+            if torch.cuda.is_available():
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                if gpu_memory_gb >= 14:  # High VRAM systems
+                    batch_size = 32 if optimization_level == "extreme" else 24
+                elif gpu_memory_gb >= 10:
+                    batch_size = 24 if optimization_level == "extreme" else 16
+                elif gpu_memory_gb >= 8:
+                    batch_size = 16 if optimization_level == "extreme" else 12
+                else:
+                    batch_size = 8 if optimization_level == "extreme" else 4
+            else:
+                batch_size = 4
+            
+            print(f"Using optimized face enhancer (optimization: {optimization_level}, batch_size: {batch_size})")
+            
+            # Use high-VRAM optimizer for systems with sufficient memory
+            if torch.cuda.is_available() and gpu_memory_gb >= 12:
+                print("🚀 Using HIGH VRAM face enhancer for maximum GPU utilization")
+                try:
+                    high_vram_enhancer = HighVRAMFaceEnhancer(method=enhancer)
+                    video_frames = load_video_to_cv2(full_video_path)
+                    enhanced_frames = high_vram_enhancer.enhance_batch_ultra(video_frames, batch_size=batch_size)
+                    imageio.mimsave(enhanced_path, enhanced_frames, fps=float(25))
+                except Exception as e:
+                    print(f"High VRAM enhancer failed ({e}), falling back to standard enhancer")
+                    enhanced_images_gen_with_len = fast_enhancer_generator_with_len(
+                        full_video_path, method=enhancer, bg_upsampler=background_enhancer,
+                        optimization_level=optimization_level, batch_size=batch_size)
+                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+            elif optimization_level in ["high", "extreme"]:
                 try:
                     enhanced_images_gen_with_len = fast_enhancer_generator_with_len(
                         full_video_path, method=enhancer, bg_upsampler=background_enhancer,
-                        optimization_level=optimization_level, batch_size=8 if optimization_level == "extreme" else 4)
+                        optimization_level=optimization_level, batch_size=batch_size)
                     imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
                 except Exception as e:
                     print(f"Fast enhancer failed ({e}), falling back to original enhancer")
@@ -301,6 +331,7 @@ class AnimateFromCoeff():
                         imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
                     except:
                         enhanced_images_gen_with_len = fast_enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
+                        imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
                         imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
             else:
                 try:

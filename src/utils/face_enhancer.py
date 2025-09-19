@@ -339,7 +339,7 @@ class TrueBatchGFPGANEnhancer:
             )
             self.gfpgan_model = self.gfpgan.gfpgan
     
-    def enhance_batch_parallel(self, images, batch_size=32):
+    def enhance_batch_parallel(self, images, batch_size=32, silent=False):
         """True parallel batch processing with comprehensive OOM handling and adaptive memory management"""
         
         # Use adaptive memory manager to determine safe batch size
@@ -365,11 +365,13 @@ class TrueBatchGFPGANEnhancer:
             else:
                 concurrent_streams = 1
                 
-            print(f"🧠 Adaptive Memory: {available_memory_gb:.2f}GB available, using {concurrent_streams} streams")
+            if not silent:
+                print(f"🧠 Adaptive Memory: {available_memory_gb:.2f}GB available, using {concurrent_streams} streams")
         else:
             concurrent_streams = 1
         
-        print(f"🚀 TRUE PARALLEL processing: {len(images)} images across {concurrent_streams} streams (batch size: {safe_batch_size})")
+        if not silent:
+            print(f"🚀 TRUE PARALLEL processing: {len(images)} images across {concurrent_streams} streams (batch size: {safe_batch_size})")
         
         enhanced_images = []
         current_batch_size = safe_batch_size
@@ -389,11 +391,11 @@ class TrueBatchGFPGANEnhancer:
             initial_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
             
             try:
-                # Split batch across streams for true parallelism
+                # Split batch across streams for true parallelism  
                 stream_batches = self._split_batch_for_streams(batch_images, concurrent_streams)
                 
-                # Process all streams in parallel with OOM monitoring
-                enhanced_batch = self._process_parallel_streams_with_oom_handling(stream_batches)
+                # Process all streams in parallel with OOM monitoring (silent mode)
+                enhanced_batch = self._process_parallel_streams_with_oom_handling(stream_batches, silent=silent)
                 enhanced_images.extend(enhanced_batch)
                 
                 # Record successful processing
@@ -456,8 +458,9 @@ class TrueBatchGFPGANEnhancer:
         for stream in self.streams:
             stream.synchronize()
         
-        # Print memory statistics and suggestions
-        self._print_memory_summary()
+        # Print memory statistics and suggestions only if not silent
+        if not silent:
+            self._print_memory_summary()
         
         return enhanced_images
     
@@ -710,7 +713,7 @@ class TrueBatchGFPGANEnhancer:
 
         return batch_size
     
-    def _process_parallel_streams_with_oom_handling(self, stream_batches):
+    def _process_parallel_streams_with_oom_handling(self, stream_batches, silent=False):
         """Process multiple batches in parallel with OOM monitoring"""
         futures = []
         enhanced_results = [None] * len(stream_batches)
@@ -720,13 +723,14 @@ class TrueBatchGFPGANEnhancer:
             try:
                 with torch.cuda.stream(stream):
                     # Process this stream's batch with OOM protection
-                    result = self._process_stream_batch_with_oom_protection(stream_batch, stream, i)
+                    result = self._process_stream_batch_with_oom_protection(stream_batch, stream, i, silent=silent)
                     enhanced_results[i] = result
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    print(f"⚠️  Stream {i} OOM, attempting recovery...")
+                    if not silent:
+                        print(f"⚠️  Stream {i} OOM, attempting recovery...")
                     # Try processing with smaller chunks
-                    result = self._process_stream_fallback(stream_batch, stream, i)
+                    result = self._process_stream_fallback(stream_batch, stream, i, silent=silent)
                     enhanced_results[i] = result
                 else:
                     raise e
@@ -743,7 +747,7 @@ class TrueBatchGFPGANEnhancer:
         
         return all_enhanced
     
-    def _process_stream_batch_with_oom_protection(self, stream_images, stream, stream_id):
+    def _process_stream_batch_with_oom_protection(self, stream_images, stream, stream_id, silent=False):
         """Process multiple images within a single CUDA stream with true parallel processing"""
         enhanced_images = []
 
@@ -781,10 +785,8 @@ class TrueBatchGFPGANEnhancer:
                         print(f"   ⚠️  Error on stream {stream_id}: {e}")
                         enhanced_images.append(img)
 
-            # Log memory usage for this stream (only if multiple images processed)
-            if len(stream_images) > 1:
-                memory_used = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-                print(f"   Stream {stream_id}: {len(stream_images)} images processed, {memory_used:.2f}GB VRAM used")
+            # Log memory usage for this stream (only if multiple images processed and not silent)
+            # Removed excessive per-stream logging to improve performance
 
         except Exception as e:
             print(f"   Stream {stream_id} batch processing failed: {e}")
@@ -793,11 +795,12 @@ class TrueBatchGFPGANEnhancer:
 
         return enhanced_images
 
-    def _process_stream_fallback(self, batch_images, stream, stream_id):
+    def _process_stream_fallback(self, batch_images, stream, stream_id, silent=False):
         """Fallback processing for a stream batch with minimal memory usage"""
         enhanced_batch = []
         
-        print(f"   Stream {stream_id}: Using conservative fallback processing")
+        if not silent:
+            print(f"   Stream {stream_id}: Using conservative fallback processing")
         
         # Process images one by one to minimize memory usage
         for i, img in enumerate(batch_images):
@@ -814,7 +817,8 @@ class TrueBatchGFPGANEnhancer:
                 enhanced_batch.append(restored_rgb)
                 
             except Exception as e:
-                print(f"   Stream {stream_id}, image {i}: Enhancement failed, using original")
+                if not silent:
+                    print(f"   Stream {stream_id}, image {i}: Enhancement failed, using original")
                 enhanced_batch.append(img)  # Use original if enhancement fails
         
         return enhanced_batch
@@ -849,17 +853,29 @@ class TrueBatchGFPGANEnhancer:
         return enhanced_images
     
     def _split_batch_for_streams(self, batch_images, num_streams):
-        """Split batch across multiple CUDA streams for true parallel processing"""
-        # Instead of giving each stream a batch, distribute images round-robin
-        # across streams so each stream processes one image at a time in parallel
-        stream_batches = [[] for _ in range(num_streams)]
-
-        for i, img in enumerate(batch_images):
-            stream_idx = i % num_streams
-            stream_batches[stream_idx].append(img)
-
-        # Remove empty stream batches
-        stream_batches = [batch for batch in stream_batches if batch]
+        """Split batch into larger chunks for each stream for better efficiency"""
+        # Instead of round-robin (which creates 1-image batches), 
+        # divide images into larger chunks for each stream
+        images_per_stream = max(1, len(batch_images) // num_streams)
+        stream_batches = []
+        
+        for i in range(num_streams):
+            start_idx = i * images_per_stream
+            end_idx = min((i + 1) * images_per_stream, len(batch_images))
+            
+            if start_idx < len(batch_images):
+                stream_batch = batch_images[start_idx:end_idx]
+                if stream_batch:  # Only add non-empty batches
+                    stream_batches.append(stream_batch)
+        
+        # Handle any remaining images by adding them to the last stream
+        remaining_start = num_streams * images_per_stream
+        if remaining_start < len(batch_images):
+            remaining_images = batch_images[remaining_start:]
+            if stream_batches:
+                stream_batches[-1].extend(remaining_images)
+            else:
+                stream_batches.append(remaining_images)
 
         return stream_batches
     
@@ -1334,8 +1350,8 @@ class HighVRAMFaceEnhancer:
             torch.cuda.empty_cache()
 
         try:
-            # Use true batch processing for maximum efficiency
-            enhanced_images = self.true_batch_enhancer.enhance_batch_parallel(images, batch_size=batch_size)
+            # Use true batch processing for maximum efficiency with minimal logging
+            enhanced_images = self.true_batch_enhancer.enhance_batch_parallel(images, batch_size=batch_size, silent=True)
             return enhanced_images
             
         except Exception as e:

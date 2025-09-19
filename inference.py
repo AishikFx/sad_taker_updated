@@ -76,7 +76,7 @@ def main(args):
         monitor.start_timing("3DMM Extraction (source image)")
     
     # Resolve and log the pic_path being used for preprocessing
-    # More robust path resolution
+    # More robust path resolution for Colab compatibility
     if os.path.isabs(pic_path):
         resolved_pic_path = pic_path
     else:
@@ -86,6 +86,13 @@ def main(args):
     print(f'Using source image path (resolved): {resolved_pic_path}')
     print(f'Original pic_path: {pic_path}')
     print(f'Current working directory: {os.getcwd()}')
+    
+    # Check if file exists before proceeding
+    if not os.path.isfile(resolved_pic_path):
+        print(f'ERROR: Source image file not found: {resolved_pic_path}')
+        print('Please ensure the file exists at the specified path.')
+        print('In Colab, you may need to upload files or adjust the path.')
+        return
     first_coeff_path, crop_pic_path, crop_info =  preprocess_model.generate(resolved_pic_path, first_frame_dir, args.preprocess,\
                                                                              source_image_flag=True, pic_size=args.size)
     

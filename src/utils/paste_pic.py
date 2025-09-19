@@ -384,8 +384,8 @@ def fast_paste_pic(video_path, pic_path, crop_info, new_audio_path, full_video_p
     Fast optimized version of paste_pic with multiple modes
     """
     processor = OptimizedPastePic(optimization_level, blend_method)
-    return processor.process_video(video_path, pic_path, crop_info, 
-                                   new_audio_path, full_video_path, extended_crop)
+    return processor.paste_video(video_path, pic_path, crop_info, 
+                                 new_audio_path, full_video_path, extended_crop)
 
 
 def paste_pic(video_path, pic_path, crop_info, new_audio_path, full_video_path, extended_crop=False):

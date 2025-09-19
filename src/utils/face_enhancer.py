@@ -34,6 +34,19 @@
 # - No manual configuration needed - fully automatic adaptation
 # - Maintains high VRAM utilization while preventing crashes
 
+import os
+import torch 
+import cv2
+import numpy as np
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+import threading
+from queue import Queue
+import multiprocessing
+
+from gfpgan import GFPGANer
+from src.utils.videoio import load_video_to_cv2
+
 
 class FastGeneratorWithLen(object):
     """ Optimized generator with length """

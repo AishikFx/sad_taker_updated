@@ -17,8 +17,11 @@ def main(args):
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
     
-    # Optional: Enable mixed precision for faster inference
-    # torch.backends.cudnn.enabled = False
+    # Enable mixed precision for faster inference on supported GPUs
+    use_amp = torch.cuda.is_available() and args.device == "cuda"
+    
+    # Disable gradients for inference to save memory
+    torch.set_grad_enabled(False)
 
     pic_path = args.source_image
     audio_path = args.driven_audio
@@ -33,7 +36,8 @@ def main(args):
     ref_eyeblink = args.ref_eyeblink
     ref_pose = args.ref_pose
 
-    current_root_path = os.path.split(sys.argv[0])[0]
+    # More reliable path calculation
+    current_root_path = os.path.dirname(os.path.abspath(__file__))
 
     sadtalker_paths = init_path(args.checkpoint_dir, os.path.join(current_root_path, 'src/config'), args.size, args.old_version, args.preprocess)
 
@@ -51,15 +55,23 @@ def main(args):
     first_frame_dir = os.path.join(save_dir, 'first_frame_dir')
     os.makedirs(first_frame_dir, exist_ok=True)
     print('3DMM Extraction for source image')
+    
+    # GPU synchronization for accurate profiling
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t0 = time.time()
+    
     first_coeff_path, crop_pic_path, crop_info =  preprocess_model.generate(pic_path, first_frame_dir, args.preprocess,\
                                                                              source_image_flag=True, pic_size=args.size)
+    
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t1 = time.time()
     if profile:
         print(f'[profile] 3DMM extraction time: {t1-t0:.3f}s')
+    
     if first_coeff_path is None:
-        print("Can't get the coeffs of the input")
-        return
+        raise RuntimeError("Failed to extract 3DMM coefficients from the input image. Please check the image quality and format.")
 
     if ref_eyeblink is not None:
         ref_eyeblink_videoname = os.path.splitext(os.path.split(ref_eyeblink)[-1])[0]
@@ -67,6 +79,8 @@ def main(args):
         os.makedirs(ref_eyeblink_frame_dir, exist_ok=True)
         print('3DMM Extraction for the reference video providing eye blinking')
         ref_eyeblink_coeff_path, _, _ =  preprocess_model.generate(ref_eyeblink, ref_eyeblink_frame_dir, args.preprocess, source_image_flag=False)
+        if ref_eyeblink_coeff_path is None:
+            print("Warning: Failed to extract coefficients from reference eye blink video. Proceeding without eye blink reference.")
     else:
         ref_eyeblink_coeff_path=None
 
@@ -79,21 +93,42 @@ def main(args):
             os.makedirs(ref_pose_frame_dir, exist_ok=True)
             print('3DMM Extraction for the reference video providing pose')
             ref_pose_coeff_path, _, _ =  preprocess_model.generate(ref_pose, ref_pose_frame_dir, args.preprocess, source_image_flag=False)
+            if ref_pose_coeff_path is None:
+                print("Warning: Failed to extract coefficients from reference pose video. Proceeding without pose reference.")
     else:
         ref_pose_coeff_path=None
 
     #audio2ceoff
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t0 = time.time()
     batch = get_data(first_coeff_path, audio_path, device, ref_eyeblink_coeff_path, still=args.still)
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t1 = time.time()
     if profile:
         print(f'[profile] prepare audio/batch time: {t1-t0:.3f}s')
 
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t0 = time.time()
-    coeff_path = audio_to_coeff.generate(batch, save_dir, pose_style, ref_pose_coeff_path)
+    
+    # Use mixed precision for audio to coefficient generation if available
+    if use_amp:
+        with torch.cuda.amp.autocast():
+            coeff_path = audio_to_coeff.generate(batch, save_dir, pose_style, ref_pose_coeff_path)
+    else:
+        coeff_path = audio_to_coeff.generate(batch, save_dir, pose_style, ref_pose_coeff_path)
+    
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t1 = time.time()
     if profile:
-        print(f'[profile] audio2coeff generate time: {t1-t0:.3f}s')
+        device_info = f"({'CUDA+AMP' if use_amp else 'CUDA' if args.device == 'cuda' else 'CPU'})"
+        print(f'[profile] audio2coeff generate {device_info} time: {t1-t0:.3f}s')
+    
+    if coeff_path is None:
+        raise RuntimeError("Failed to generate audio coefficients. Please check the audio file format and quality.")
 
     # 3dface render
     if args.face3dvis:
@@ -105,18 +140,79 @@ def main(args):
                                 batch_size, input_yaw_list, input_pitch_list, input_roll_list,
                                 expression_scale=args.expression_scale, still_mode=args.still, preprocess=args.preprocess, size=args.size)
     
+    # Dynamic batch size adjustment based on GPU memory
+    effective_batch_size = batch_size
+    if torch.cuda.is_available() and args.device == "cuda":
+        try:
+            # Check available GPU memory
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            allocated_memory_gb = torch.cuda.memory_allocated() / 1024**3
+            available_memory_gb = gpu_memory_gb - allocated_memory_gb
+            
+            # Warn about enhancer memory usage
+            if (args.enhancer or args.background_enhancer) and available_memory_gb < 6:
+                print(f"Warning: Using enhancer with limited GPU memory ({available_memory_gb:.1f}GB available). Consider disabling enhancer or running on CPU if you encounter out-of-memory errors.")
+            
+            # Adjust batch size based on available memory
+            if available_memory_gb < 4:  # Less than 4GB available
+                effective_batch_size = max(1, batch_size // 4)
+                print(f"GPU memory low ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
+            elif available_memory_gb < 8:  # Less than 8GB available
+                effective_batch_size = max(1, batch_size // 2)
+                print(f"GPU memory moderate ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
+            
+        except Exception as e:
+            print(f"Warning: Could not check GPU memory, using default batch size: {e}")
+    
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t0 = time.time()
-    result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
-                                enhancer=args.enhancer, background_enhancer=args.background_enhancer, preprocess=args.preprocess, img_size=args.size, profile=profile, batch_size=batch_size)
+    
+    try:
+        result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
+                                    enhancer=args.enhancer, background_enhancer=args.background_enhancer, 
+                                    preprocess=args.preprocess, img_size=args.size, profile=profile, 
+                                    batch_size=effective_batch_size)
+    except RuntimeError as e:
+        if "out of memory" in str(e).lower() and effective_batch_size > 1:
+            print(f"GPU out of memory with batch size {effective_batch_size}, retrying with batch size 1...")
+            torch.cuda.empty_cache()  # Clear GPU cache
+            result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
+                                        enhancer=args.enhancer, background_enhancer=args.background_enhancer, 
+                                        preprocess=args.preprocess, img_size=args.size, profile=profile, 
+                                        batch_size=1)
+        else:
+            raise e
+    
+    if profile and torch.cuda.is_available():
+        torch.cuda.synchronize()
     t1 = time.time()
     if profile:
-        print(f'[profile] facerender total generate time: {t1-t0:.3f}s')
+        device_info = f"({'CUDA' if args.device == 'cuda' else 'CPU'})"
+        print(f'[profile] facerender total generate {device_info} time: {t1-t0:.3f}s (batch_size={effective_batch_size})')
     
-    shutil.move(result, save_dir+'.mp4')
-    print('The generated video is named:', save_dir+'.mp4')
+    if result is None:
+        raise RuntimeError("Failed to generate final video. Please check all inputs and try again.")
+    
+    # Use try/except for file operations to handle potential issues
+    try:
+        shutil.move(result, save_dir+'.mp4')
+        print('The generated video is named:', save_dir+'.mp4')
+    except Exception as e:
+        print(f"Warning: Could not move final video file: {e}")
+        print(f'The generated video is at: {result}')
 
     if not args.verbose:
-        shutil.rmtree(save_dir)
+        try:
+            shutil.rmtree(save_dir)
+        except Exception as e:
+            print(f"Warning: Could not clean up temporary directory {save_dir}: {e}")
+
+    # Final GPU memory cleanup
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        if profile:
+            print(f"[profile] GPU memory cleared. Final allocated: {torch.cuda.memory_allocated()/1024**3:.2f}GB")
 
     
 if __name__ == '__main__':
@@ -135,8 +231,8 @@ if __name__ == '__main__':
     parser.add_argument('--input_yaw', nargs='+', type=int, default=None, help="the input yaw degree of the user ")
     parser.add_argument('--input_pitch', nargs='+', type=int, default=None, help="the input pitch degree of the user")
     parser.add_argument('--input_roll', nargs='+', type=int, default=None, help="the input roll degree of the user")
-    parser.add_argument('--enhancer',  type=str, default=None, help="Face enhancer, [gfpgan, RestoreFormer]")
-    parser.add_argument('--background_enhancer',  type=str, default=None, help="background enhancer, [realesrgan]")
+    parser.add_argument('--enhancer',  type=str, default=None, help="Face enhancer, [gfpgan, RestoreFormer]. Warning: Increases VRAM usage significantly")
+    parser.add_argument('--background_enhancer',  type=str, default=None, help="background enhancer, [realesrgan]. Warning: Increases VRAM usage significantly")
     parser.add_argument('--profile', action='store_true', help='print timing breakdown for major stages')
     parser.add_argument("--cpu", dest="cpu", action="store_true") 
     parser.add_argument("--face3dvis", action="store_true", help="generate 3d face and 3d landmarks") 
@@ -146,9 +242,9 @@ if __name__ == '__main__':
     parser.add_argument("--old_version",action="store_true", help="use the pth other than safetensor version" ) 
 
 
-    # net structure and parameters
-    parser.add_argument('--net_recon', type=str, default='resnet50', choices=['resnet18', 'resnet34', 'resnet50'], help='useless')
-    parser.add_argument('--init_path', type=str, default=None, help='Useless')
+    # net structure and parameters (kept for compatibility, but consider removing if truly unused)
+    parser.add_argument('--net_recon', type=str, default='resnet50', choices=['resnet18', 'resnet34', 'resnet50'], help='Network architecture for face reconstruction')
+    parser.add_argument('--init_path', type=str, default=None, help='Path for network initialization')
     parser.add_argument('--use_last_fc',default=False, help='zero initialize the last fc')
     parser.add_argument('--bfm_folder', type=str, default='./checkpoints/BFM_Fitting/')
     parser.add_argument('--bfm_model', type=str, default='BFM_model_front.mat', help='bfm model')

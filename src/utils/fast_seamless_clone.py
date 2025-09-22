@@ -38,7 +38,7 @@ class FastSeamlessClone:
     def __init__(self, mode="fast"):
         """
         mode options:
-        - "ultra_fast": Simple alpha blending (10x faster)
+        - "fast": Simple alpha blending (3-4x faster)
         - "fast": Feathered blending (5x faster) 
         - "balanced": Gaussian blending (3x faster)
         - "seamless": Original seamless clone (slowest but best quality)
@@ -48,7 +48,7 @@ class FastSeamlessClone:
     def clone(self, src, dst, mask, center):
         """Main cloning function with mode selection"""
         
-        if self.mode == "ultra_fast":
+        if self.mode == "fast":
             return self.simple_blend(src, dst, mask, center)
         elif self.mode == "fast":
             return self.feather_blend(src, dst, center, feather_size=15)
@@ -58,7 +58,7 @@ class FastSeamlessClone:
             return cv2.seamlessClone(src, dst, mask, center, cv2.NORMAL_CLONE)
     
     def simple_blend(self, src, dst, mask, center):
-        """Ultra-fast simple alpha blending"""
+        """Fast simple alpha blending"""
         alpha = mask.astype(np.float32) / 255.0
         h, w = src.shape[:2]
         cx, cy = center
@@ -166,7 +166,7 @@ class OptimizedPasteProcessor:
         
         # Configure based on optimization level
         if optimization_level == "extreme":
-            self.clone_mode = "ultra_fast"
+            self.clone_mode = "fast"
             self.use_parallel = True
             self.batch_size = 16
             self.num_workers = min(8, multiprocessing.cpu_count())
@@ -231,7 +231,7 @@ def benchmark_clone_methods(test_image_path, num_iterations=50):
     center = (w//2, h//2)
     
     methods = {
-        "ultra_fast": FastSeamlessClone("ultra_fast"),
+        "fast": FastSeamlessClone("fast"),
         "fast": FastSeamlessClone("fast"), 
         "balanced": FastSeamlessClone("balanced"),
         "seamless": FastSeamlessClone("seamless")

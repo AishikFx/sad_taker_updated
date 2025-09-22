@@ -1,8 +1,8 @@
 # SadTalker Microservice Setup Guide
-# Complete setup instructions for ultra-fast video generation service
+# Complete setup instructions for quality video generation service
 
 """
-# SadTalker Ultra-Fast Microservice
+# SadTalker Quality Microservice
 
  **Performance**: 4-6x faster video generation (3-5s vs 15-20s)
 **Technology**: FastAPI + Redis caching + Optimized SadTalker pipeline
@@ -329,7 +329,7 @@ redis-cli INFO memory
 The SadTalker Microservice achieves 4-6x speedup through intelligent caching:
 
 1. **Avatar Upload**: Process image once, cache all expensive computations
-2. **VIP Generation**: Use cached face data + new audio = ultra-fast generation  
+2. **VIP Generation**: Use cached face data + new audio = fast generation  
 3. **Background Processing**: Immediate API responses, processing in background
 4. **Smart TTL**: Critical data cached forever, temporary data expires appropriately
 5. **Queue System**: Handle multiple requests efficiently

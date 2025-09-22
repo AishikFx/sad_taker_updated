@@ -1,5 +1,5 @@
 # Optimized Video Generation Service
-# Ultra-fast generation using cached SadTalker components
+# Quality-focused generation using cached SadTalker components
 
 import os
 import shutil
@@ -29,7 +29,7 @@ class OptimizedVideoGenerator:
         
         logger.info(" OptimizedVideoGenerator initialized")
     
-    async def generate_video_ultra_fast(
+    async def generate_video_fast(
         self,
         image_hash: str,
         audio_bytes: bytes,
@@ -39,7 +39,7 @@ class OptimizedVideoGenerator:
         quality: str = "medium"
     ) -> Dict[str, Any]:
         """
-         Main ultra-fast generation method
+         Main fast generation method
         
         Performance breakdown:
         - Cache loading: 0.01-0.03s (vs 8-10s computation)
@@ -50,7 +50,7 @@ class OptimizedVideoGenerator:
         start_time = datetime.now()
         generation_id = hashlib.sha256(audio_bytes).hexdigest()[:12]
         
-        logger.info(f" Starting ultra-fast generation: {generation_id}")
+        logger.info(f"Starting fast generation: {generation_id}")
         logger.info(f"   Image: {image_hash[:8]}... Mode: {preprocess_mode}")
         logger.info(f"   Audio size: {len(audio_bytes)} bytes")
         
@@ -109,7 +109,7 @@ class OptimizedVideoGenerator:
             return result
             
         except Exception as e:
-            logger.error(f" Ultra-fast generation failed: {e}")
+            logger.error(f"Fast generation failed: {e}")
             return {
                 "success": False,
                 "error": str(e),

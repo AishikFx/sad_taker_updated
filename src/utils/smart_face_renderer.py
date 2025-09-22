@@ -255,8 +255,8 @@ class SmartFaceRenderWorker:
                     out = generator(source_image, kp_source=kp_source, kp_driving=kp_norm)
                     predictions.append(out['prediction'])
                     
-                    # Periodic GPU memory cleanup for aggressive optimization
-                    if self.aggressive_batching and torch.cuda.is_available() and len(predictions) % 5 == 0:
+                    # Periodic GPU memory cleanup for stability
+                    if torch.cuda.is_available() and len(predictions) % 10 == 0:
                         torch.cuda.empty_cache()
                 
                 # Stack all predictions with proper dimensions

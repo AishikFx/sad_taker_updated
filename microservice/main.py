@@ -1,5 +1,5 @@
 # SadTalker FastAPI Microservice with Redis Caching
-# Ultra-fast video generation using intelligent caching strategy
+# Quality-focused video generation using intelligent caching strategy
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="SadTalker Microservice",
-    description="Ultra-fast talking head video generation with intelligent caching",
+    description="Quality-focused talking head video generation with intelligent caching",
     version="1.0.0"
 )
 

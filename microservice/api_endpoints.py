@@ -37,7 +37,7 @@ class VideoGenerator:
     def __init__(self, models: SadTalkerModels):
         self.models = models
     
-    async def generate_video_ultra_fast(
+    async def generate_video_fast(
         self, 
         image_hash: str, 
         audio_bytes: bytes, 
@@ -180,7 +180,7 @@ class VIPQueue:
                     
                     # Generate video using cached data
                     try:
-                        video_path = await video_generator.generate_video_ultra_fast(
+                        video_path = await video_generator.generate_video_fast(
                             request["image_hash"],
                             request["audio_bytes"],
                             request.get("preprocess_mode", "full"),

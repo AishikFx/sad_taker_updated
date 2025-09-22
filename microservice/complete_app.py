@@ -2,7 +2,7 @@
 
 """
 SadTalker Microservice - Complete Implementation
-Ultra-fast video generation with intelligent caching
+Quality-focused video generation with intelligent caching
 
 Key Features:
 - 4-6x faster generation (3-5s vs 15-20s)
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI
 app = FastAPI(
-    title="SadTalker Ultra-Fast Microservice",
+    title="SadTalker Quality Microservice",
     description=" AI talking head video generation with intelligent caching - 4-6x faster than standard processing",
     version="1.0.0",
     docs_url="/docs",
@@ -191,7 +191,7 @@ class VIPQueue:
                     
                     try:
                         # Generate video using optimized generator
-                        result = await self.video_generator.generate_video_ultra_fast(
+                        result = await self.video_generator.generate_video_fast(
                             request["image_hash"],
                             request["audio_bytes"],
                             request.get("preprocess_mode", "full"),
@@ -260,7 +260,7 @@ async def root():
         queue_status = service.vip_queue.get_queue_status()
         
         return {
-            "service": "SadTalker Ultra-Fast Microservice",
+            "service": "SadTalker Quality Microservice",
             "version": "1.0.0",
             "status": " Running",
             "description": "AI talking head generation with 4-6x speedup via intelligent caching",

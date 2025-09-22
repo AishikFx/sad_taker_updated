@@ -10,31 +10,31 @@ class OptimizationConfig:
     
     # Performance presets for different use cases
     PRESETS = {
-        "ultra_fast": {
-            "optimization_level": "extreme",
+        "fast": {
+            "optimization_level": "high",
             "face_renderer": {
-                "batch_size": 16,
-                "use_mixed_precision": True,
-                "aggressive_caching": True
+                "batch_size": 12,
+                "use_mixed_precision": False,  # Disabled for quality
+                "aggressive_caching": False   # Disabled for quality
             },
             "seamless_clone": {
-                "mode": "ultra_fast",  # Simple alpha blending
+                "mode": "fast",  # Fast but quality-aware blending
                 "use_parallel": True,
-                "num_workers": 8
+                "num_workers": 6
             },
             "face_enhancer": {
-                "method": "lightweight",
-                "batch_size": 16,
-                "optimization_level": "extreme"
+                "method": "standard",
+                "batch_size": 12,
+                "optimization_level": "high"
             },
-            "description": "Maximum speed, basic quality - 10x faster"
+            "description": "Good speed with maintained quality - 3x faster"
         },
         
         "fast": {
             "optimization_level": "high", 
             "face_renderer": {
                 "batch_size": 12,
-                "use_mixed_precision": True,
+                "use_mixed_precision": False,  # Disabled for quality
                 "aggressive_caching": False
             },
             "seamless_clone": {
@@ -48,7 +48,7 @@ class OptimizationConfig:
                 "optimization_level": "high",
                 "use_high_vram_optimizer": True
             },
-            "description": "High speed, good quality - 5x faster"
+            "description": "Good speed with quality focus - 3x faster"
         },
         
         "balanced": {
@@ -171,8 +171,7 @@ class OptimizationConfig:
     def print_performance_estimate(self):
         """Print estimated performance improvements"""
         speedups = {
-            "ultra_fast": "8-10x faster",
-            "fast": "4-6x faster", 
+            "fast": "3-4x faster", 
             "balanced": "2-3x faster",
             "quality": "Original speed"
         }
@@ -188,9 +187,9 @@ class OptimizationConfig:
             gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
             print(f"GPU Memory: {gpu_memory:.1f}GB")
             if gpu_memory < 6:
-                print("⚠️  Low GPU memory detected. Consider 'ultra_fast' preset for better performance.")
+                print("Low GPU memory detected. Consider 'fast' preset for better performance.")
             elif gpu_memory >= 12:
-                print(" Excellent GPU memory. All presets should work well.")
+                print("Excellent GPU memory. All presets should work well.")
         
         print("="*30)
 
@@ -217,10 +216,6 @@ class OptimizationConfig:
 
 
 # Quick preset functions for convenience
-def get_ultra_fast_config():
-    """Get ultra-fast configuration (maximum speed)"""
-    return OptimizationConfig("ultra_fast")
-
 def get_fast_config():
     """Get fast configuration (high speed, good quality)"""
     return OptimizationConfig("fast")
@@ -276,7 +271,7 @@ if __name__ == "__main__":
     OptimizationConfig.list_presets()
     
     # Test different configurations
-    configs = ["ultra_fast", "fast", "balanced", "quality"]
+    configs = ["fast", "balanced", "quality"]
     
     for preset in configs:
         print(f"\n--- Testing {preset} preset ---")

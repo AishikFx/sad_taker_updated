@@ -1,5 +1,5 @@
 #  SadTalker Microservice Requirements
-# Production-ready dependencies for ultra-fast video generation
+# Production-ready dependencies for quality video generation
 
 # FastAPI and web framework
 fastapi==0.104.1

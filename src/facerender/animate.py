@@ -239,7 +239,7 @@ class AnimateFromCoeff():
                 image = np.transpose(image.data.cpu().numpy(), [1, 2, 0]).astype(np.float32)
             else:
                 # Fallback: try to detect the right format
-                print(f"⚠️ Warning: Unexpected image shape {image.shape}, attempting auto-detection")
+                print(f"Warning: Unexpected image shape {image.shape}, attempting auto-detection")
                 image_np = image.data.cpu().numpy()
                 if len(image_np.shape) == 3:
                     # Assume channels are in the smallest dimension
@@ -291,20 +291,21 @@ class AnimateFromCoeff():
             full_video_path = os.path.join(video_save_dir, video_name_full)
             return_path = full_video_path
             
-            # Use optimized paste based on optimization level
-            if optimization_level in ["high", "extreme"]:
-                print(f"Using fast paste processing (optimization: {optimization_level})")
+            # Use quality-focused paste processing
+            if optimization_level == "high":
+                print(f"Using optimized paste processing (optimization: {optimization_level})")
                 try:
-                    # Try optimized paste first
+                    # Try optimized paste with quality-focused settings
                     optimizer = OptimizedPastePic(optimization_level=optimization_level, 
-                                                blend_method="simple" if optimization_level == "extreme" else "gaussian")
+                                                blend_method="gaussian")  # Always use gaussian for quality
                     optimizer.paste_video(path, pic_path, crop_info, new_audio_path, full_video_path, 
                                         extended_crop=True if 'ext' in preprocess.lower() else False)
                 except Exception as e:
-                    print(f"Fast paste failed ({e}), falling back to original paste_pic")
+                    print(f"Optimized paste failed ({e}), falling back to original paste_pic")
                     paste_pic(path, pic_path, crop_info, new_audio_path, full_video_path, 
                             extended_crop=True if 'ext' in preprocess.lower() else False)
             else:
+                # Use standard paste for best quality
                 paste_pic(path, pic_path, crop_info, new_audio_path, full_video_path, 
                         extended_crop=True if 'ext' in preprocess.lower() else False)
             print(f'The generated video is named {video_save_dir}/{video_name_full}') 

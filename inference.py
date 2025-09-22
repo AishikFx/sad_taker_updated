@@ -283,9 +283,9 @@ if __name__ == '__main__':
     parser.add_argument('--profile', action='store_true', help='print timing breakdown for major stages')
     
     # NEW: Performance optimization arguments
-    parser.add_argument('--optimization_preset', type=str, choices=['ultra_fast', 'fast', 'balanced', 'quality'], 
+    parser.add_argument('--optimization_preset', type=str, choices=['fast', 'balanced', 'quality'], 
                        default='balanced', help="Performance optimization preset")
-    parser.add_argument('--optimization_level', type=str, choices=['low', 'medium', 'high', 'extreme'], 
+    parser.add_argument('--optimization_level', type=str, choices=['low', 'medium', 'high'], 
                        help="Manual optimization level (overrides preset)")
     parser.add_argument('--list_presets', action='store_true', help="List available optimization presets and exit")
     parser.add_argument("--cpu", dest="cpu", action="store_true") 

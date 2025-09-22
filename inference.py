@@ -210,6 +210,26 @@ def main(args):
                                         batch_size=1)
         else:
             raise e
+
+    # !!! --- CRITICAL FIX --- !!!
+    # Release the animate_from_coeff model from memory to free VRAM for face enhancer
+    # This is essential because the face renderer can hold 6+ GB of VRAM
+    if args.enhancer and torch.cuda.is_available():
+        print("🧹 Releasing face renderer from VRAM to prepare for face enhancement...")
+        
+        # Delete the animate_from_coeff object to free VRAM
+        del animate_from_coeff
+        
+        # Force garbage collection and CUDA cache cleanup
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Brief pause to allow memory cleanup to complete
+        time.sleep(0.5)
+        print(f"✅ Face renderer memory cleanup complete. VRAM freed for enhancer.")
+    # !!! -------------------- !!!
     
     if profile and torch.cuda.is_available():
         torch.cuda.synchronize()

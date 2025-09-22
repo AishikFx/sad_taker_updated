@@ -6,6 +6,8 @@ import warnings
 from skimage import img_as_ubyte
 import safetensors
 import safetensors.torch 
+import gc
+import time
 warnings.filterwarnings('ignore')
 
 import imageio
@@ -286,6 +288,31 @@ class AnimateFromCoeff():
             enhanced_path = os.path.join(video_save_dir, 'temp_'+video_name_enhancer)
             av_path_enhancer = os.path.join(video_save_dir, video_name_enhancer) 
             return_path = av_path_enhancer
+
+            # !!! --- CRITICAL FIX --- !!!
+            # Release the VRAM held by the video generator before starting enhancement.
+            print("🧹 Releasing video generator from VRAM to free memory for enhancer...")
+            
+            # Clear any model references that might be holding VRAM
+            if hasattr(self, 'generator'):
+                del self.generator
+            if hasattr(self, 'kp_extractor'):
+                del self.kp_extractor  
+            if hasattr(self, 'he_estimator'):
+                del self.he_estimator
+            if hasattr(self, 'mapping'):
+                del self.mapping
+            
+            # Force garbage collection and CUDA cache cleanup
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
+            # Brief pause to allow memory cleanup to complete
+            time.sleep(0.5)
+            print(f"✅ Memory cleanup complete. VRAM freed for enhancer.")
+            # !!! -------------------- !!!
 
             # Use new optimized face enhancer with automatic batch sizing
             print(f"🚀 Using optimized face enhancer with auto-scaling batch size")

@@ -106,13 +106,15 @@ class EnhancerWorker:
             return None
 
     def enhance_batch(self, image_batch: List[np.ndarray]) -> List[np.ndarray]:
+        """Processes ONE batch of images with a try-fail-recover-fallback loop."""
         if self.model is None:
             print("⚠️ Model not initialized. Returning original images.")
             return image_batch
 
-        max_retries = 3
+        max_retries = 2  # Try the full batch twice
         for attempt in range(max_retries):
             try:
+                # Attempt to process the entire batch at once
                 enhanced_images = self._process_batch_internal(image_batch)
                 self.memory_manager.record_success(len(image_batch))
                 return enhanced_images
@@ -124,14 +126,23 @@ class EnhancerWorker:
                         print(f"🔄 Retrying batch (attempt {attempt + 2}/{max_retries})")
                         time.sleep(1)
                     else:
-                        print("❌ Persistent OOM after retries. Falling back to safer processing.")
-                        return self._fallback_process(image_batch)
+                        # If batch processing fails after retries, trigger the safer fallback
+                        print("❌ Batch processing failed due to persistent OOM. Switching to safer one-by-one fallback mode for this batch.")
+                        return self._fallback_process_one_by_one(image_batch)
                 else:
+                    # Re-raise errors that are not OOM
+                    print(f"❌ A non-OOM error occurred in batch processing: {e}")
                     raise e
+        
+        # This part should ideally not be reached, but as a final safeguard:
         return image_batch
 
     def _process_batch_internal(self, image_batch: List[np.ndarray]) -> List[np.ndarray]:
+        """The core processing loop for a single batch."""
         results = []
+        # The GFPGANer.enhance method processes a list of cropped faces.
+        # It's important that the input `image_batch` contains the data it expects.
+        # Based on SadTalker, this is usually a list of cropped face images.
         for img_rgb in image_batch:
             img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
             _, _, restored_img_bgr = self.model.enhance(
@@ -141,14 +152,23 @@ class EnhancerWorker:
             results.append(restored_img_rgb)
         return results
 
-    def _fallback_process(self, image_batch: List[np.ndarray]) -> List[np.ndarray]:
+    def _fallback_process_one_by_one(self, image_batch: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        A safer, one-by-one processing method. If any single image fails,
+        it returns the original image for that slot, ensuring the output list
+        has the correct length and image sizes.
+        """
         results = []
         for img in image_batch:
             try:
-                results.append(self._process_batch_internal([img])[0])
-            except Exception:
-                results.append(img)
+                # Process each image as a batch of one
+                enhanced_img = self._process_batch_internal([img])[0]
+                results.append(enhanced_img)
+            except Exception as e:
+                print(f"   - ⚠️ Single image enhancement failed: {e}. Using original for this image.")
+                results.append(img)  # Return the original image for this specific one
             finally:
+                # Be extra careful with memory in fallback mode
                 torch.cuda.empty_cache()
         return results
 
@@ -202,9 +222,16 @@ def enhance_images(images: List[np.ndarray], batch_size: int = 16, max_workers: 
         for future in tqdm(as_completed(future_to_batch_idx), total=len(batches), desc="Enhancing Batches"):
             batch_idx = future_to_batch_idx[future]
             try:
-                results[batch_idx] = future.result()
+                # This will now be a list of correctly-sized images, even if some failed.
+                batch_result = future.result()
+                if len(batch_result) != len(batches[batch_idx]):
+                    print(f"⚠️ Warning: Batch {batch_idx} result count mismatch. Defaulting to original.")
+                    results[batch_idx] = batches[batch_idx]
+                else:
+                    results[batch_idx] = batch_result
             except Exception as exc:
-                print(f"A batch generated a critical exception: {exc}")
+                print(f"❌ A batch generated a critical, unrecoverable exception: {exc}")
+                # As a last resort, return the original images for that batch
                 results[batch_idx] = batches[batch_idx]
 
     for i in range(len(batches)):

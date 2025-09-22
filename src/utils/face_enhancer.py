@@ -697,34 +697,38 @@ class TrueBatchGFPGANEnhancer:
         return insights
 
     def _adaptive_oom_prevention(self, batch_size, image_count):
-
-        try:
-            # Get current memory state
-            total_memory = torch.cuda.get_device_properties(0).total_memory
-            allocated_memory = torch.cuda.memory_allocated()
-            available_memory = total_memory - allocated_memory
-
-            # Estimate memory needed for this batch
-            # Conservative estimate: 2.5GB per image for GFPGAN processing
-            estimated_memory_per_image = 2.5 * 1e9  # 2.5GB in bytes
-            estimated_total_memory = batch_size * image_count * estimated_memory_per_image
-
-            # Safety margin: leave 20% buffer
-            safe_available_memory = available_memory * 0.8
-
-            if estimated_total_memory > safe_available_memory:
-                # Calculate safe batch size
-                safe_batch_size = max(1, int(safe_available_memory / (image_count * estimated_memory_per_image)))
-
-                if safe_batch_size < batch_size:
-                    print(f"   ⚠️  OOM Prevention: Reducing batch size from {batch_size} to {safe_batch_size}")
-                    print(f"      Estimated: {estimated_total_memory/1e9:.1f}GB needed, {safe_available_memory/1e9:.1f}GB safe")
-                    return safe_batch_size
-
-        except Exception as e:
-            print(f"   OOM prevention check failed: {e}")
-
-        return batch_size
+        """Intelligent OOM prevention based on real VRAM usage and image dimensions"""
+        
+        if not torch.cuda.is_available():
+            return min(4, batch_size)
+        
+        # Get current memory status
+        current_memory_gb = torch.cuda.memory_allocated() / 1e9
+        total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        available_memory_gb = total_memory_gb - current_memory_gb
+        
+        # Estimate memory needed per image for GFPGAN processing
+        # GFPGAN typically needs: input tensor + intermediate tensors + output tensor + model overhead
+        memory_per_image_gb = 0.8  # Conservative estimate based on 512x512 images
+        
+        # Calculate safe batch size based on available memory
+        memory_safe_batch_size = max(1, int(available_memory_gb * 0.7 / memory_per_image_gb))
+        
+        # Apply OOM history constraints
+        history_safe_batch_size = self.memory_manager.get_safe_batch_size(batch_size)
+        
+        # Take the minimum of all constraints
+        final_batch_size = min(batch_size, memory_safe_batch_size, history_safe_batch_size)
+        
+        # Ensure we don't exceed the total number of images
+        final_batch_size = min(final_batch_size, image_count)
+        
+        # Debug info (only when batch size is reduced significantly)
+        if final_batch_size < batch_size * 0.5:
+            print(f"   🔍 OOM Prevention: Requested {batch_size} → Safe {final_batch_size}")
+            print(f"      Available VRAM: {available_memory_gb:.1f}GB, Memory/image: {memory_per_image_gb:.1f}GB")
+        
+        return final_batch_size
     
     def _process_parallel_streams_with_oom_handling(self, stream_batches, silent=False):
         """Process multiple batches in parallel with OOM monitoring"""
@@ -1343,36 +1347,53 @@ class HighVRAMFaceEnhancer:
             print(f"Warning: Could not initialize fallback enhancer: {e}")
     
     def enhance_batch_ultra(self, images, batch_size=32):
-        """Ultra-fast batch processing with TRUE parallel GPU utilization"""
+        """Ultra-fast batch processing with proper parallel CUDA implementation"""
 
-        # Calculate dynamic batch size based on available VRAM
-        batch_size = self._calculate_ultra_batch_size(batch_size)
-
-        # Setup for maximum GPU utilization
-        if torch.cuda.is_available():
-            # Use 95% of VRAM for processing
-            torch.cuda.set_per_process_memory_fraction(0.95)
-
-            # Enable all optimizations
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cudnn.deterministic = False
-
-            # Pre-warm GPU
-            torch.cuda.empty_cache()
-
-        try:
-            # Use true batch processing for maximum efficiency with minimal logging
-            enhanced_images = self.true_batch_enhancer.enhance_batch_parallel(images, batch_size=batch_size, silent=True)
-            return enhanced_images
+        # Use the REAL optimizations: parallel processing with CUDA streams
+        if not torch.cuda.is_available() or self.gfpgan_model is None:
+            print("⚠️  CUDA unavailable, using fallback")
+            return self._fallback_batch_enhance(images, batch_size)
+        
+        print(f"🚀 ULTRA MODE: Processing {len(images)} images with TRUE parallel batching")
+        
+        # Calculate optimal batch size for available VRAM
+        optimal_batch_size = self._calculate_ultra_batch_size(batch_size)
+        
+        # Apply adaptive OOM prevention
+        safe_batch_size = self._adaptive_oom_prevention(optimal_batch_size, len(images))
+        
+        # Use the REAL parallel processing with CUDA streams
+        enhanced_images = []
+        total_batches = (len(images) + safe_batch_size - 1) // safe_batch_size
+        
+        for i in tqdm(range(0, len(images), safe_batch_size), desc="TRUE Parallel Enhancement"):
+            batch_images = images[i:i + safe_batch_size]
             
-        except Exception as e:
-            print(f"⚠️  True batch enhancer failed: {e}")
-            print("🔄 Falling back to optimized sequential processing...")
-            
-            # Fallback to optimized sequential processing
-            return self._fallback_batch_enhance(images, batch_size // 2)
+            try:
+                # Split batch across CUDA streams for true parallel processing
+                stream_batches = self._split_batch_for_streams(batch_images, len(self.streams))
+                
+                # Process all streams in parallel
+                batch_enhanced = self._process_parallel_streams_with_oom_handling(
+                    stream_batches, silent=True
+                )
+                enhanced_images.extend(batch_enhanced)
+                
+                # Record successful batch processing
+                self.memory_manager.record_success(len(batch_images), torch.cuda.memory_allocated())
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"🔄 OOM in ultra mode, switching to fallback for batch {i//safe_batch_size + 1}")
+                    self.memory_manager.record_failure(len(batch_images), "oom")
+                    
+                    # Process this batch with fallback
+                    batch_enhanced = self._fallback_batch_enhance(batch_images, min(4, len(batch_images)))
+                    enhanced_images.extend(batch_enhanced)
+                else:
+                    raise e
+        
+        return enhanced_images
     
     def _calculate_ultra_batch_size(self, requested_batch_size=32):
         """Calculate ultra-aggressive batch size based on available VRAM - scales automatically"""

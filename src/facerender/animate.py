@@ -30,6 +30,8 @@ from src.utils.paste_pic import paste_pic
 # Import optimized paste functions  
 from src.utils.paste_pic import fast_paste_pic, OptimizedPastePic
 from src.utils.videoio import save_video_with_watermark
+# Import smart face renderer
+from src.utils.smart_face_renderer import render_animation_smart
 
 try:
     import webui  # in webui
@@ -203,18 +205,18 @@ class AnimateFromCoeff():
 
         frame_num = x['frame_num']
 
-        # Use optimized make_animation based on optimization level
-        if optimization_level in ["high", "extreme"]:
-            print(f"Using fast Face Renderer (optimization: {optimization_level})")
-            predictions_video = make_animation_fast(source_image, source_semantics, target_semantics,
-                                            self.generator, self.kp_extractor, self.he_estimator, self.mapping, 
-                                            yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp = True, 
-                                            optimization_level=optimization_level)
-        else:
-            # Keep the original make_animation call for compatibility
-            predictions_video = make_animation(source_image, source_semantics, target_semantics,
-                                            self.generator, self.kp_extractor, self.he_estimator, self.mapping, 
-                                            yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp = True)
+        # Use smart face renderer with dynamic VRAM detection and batch optimization
+        print(f"🚀 Using Smart Face Renderer with dynamic VRAM detection (optimization: {optimization_level})")
+        
+        # The smart renderer automatically detects optimal batch size based on available VRAM
+        predictions_video = render_animation_smart(
+            source_image, source_semantics, target_semantics,
+            self.generator, self.kp_extractor, self.he_estimator, self.mapping,
+            yaw_c_seq, pitch_c_seq, roll_c_seq, 
+            use_exp=True, 
+            optimization_level=optimization_level,
+            batch_size=batch_size
+        )
 
         # Use the original, working tensor-to-numpy conversion
         predictions_video = predictions_video.reshape((-1,)+predictions_video.shape[2:])

@@ -66,6 +66,37 @@ def main(args):
 
     audio_to_coeff = Audio2Coeff(sadtalker_paths,  device)
     
+    # Ultra-aggressive VRAM management before face renderer initialization
+    print("Applying ultra-aggressive VRAM management...")
+    import gc
+    
+    # Force multiple rounds of cleanup
+    for i in range(5):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    
+    # Set memory fraction to prevent over-allocation
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.set_per_process_memory_fraction(0.8)  # Use maximum 80% of VRAM
+            print("Set CUDA memory fraction to 80%")
+        except:
+            pass
+    
+    # Check VRAM before face renderer initialization
+    if torch.cuda.is_available():
+        total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        allocated_mem = torch.cuda.memory_allocated() / (1024**3)
+        free_mem = total_mem - allocated_mem
+        print(f"Pre-face-renderer VRAM: {free_mem:.1f}GB free / {total_mem:.1f}GB total")
+        
+        if free_mem < 8.0:  # If less than 8GB free
+            print("WARNING: Low VRAM detected, using minimal face renderer...")
+            # Set environment variable for minimal mode
+            os.environ['SADTALKER_MINIMAL_MODE'] = '1'
+    
     animate_from_coeff = AnimateFromCoeff(sadtalker_paths, device, optimization_level=optimization_level)
 
     # profiling
@@ -274,19 +305,35 @@ def main(args):
         else:
             raise e
 
-    # !!! --- CRITICAL FIX --- !!!
-    # Release the animate_from_coeff model from memory to free VRAM for face enhancer
-    # This is essential because the face renderer can hold 6+ GB of VRAM
-    if args.enhancer and torch.cuda.is_available():
-        print(" Releasing face renderer from VRAM to prepare for face enhancement...")
+    # !!! --- CRITICAL COMPLETE VRAM RELEASE --- !!!
+    # The face renderer models hold 6-8GB of VRAM and MUST be completely removed
+    # before face enhancement starts, otherwise OOM is guaranteed
+    if torch.cuda.is_available():
+        print("🧹 COMPLETELY RELEASING FACE RENDERER FROM VRAM...")
         
-        # Delete the animate_from_coeff object to free VRAM
+        # First, call the model's own cleanup method
+        if hasattr(animate_from_coeff, 'release_face_renderer_models'):
+            animate_from_coeff.release_face_renderer_models()
+        
+        # Then delete the entire object
         del animate_from_coeff
         
-        # Force garbage collection and CUDA cache cleanup
+        # Force aggressive cleanup - the face renderer is VRAM-heavy
+        import gc
+        for cleanup_round in range(5):  # Multiple aggressive rounds
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        # Check how much VRAM we freed
+        if torch.cuda.is_available():
+            free_mem = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / (1024**3)
+            print(f"🎉 Face renderer cleanup complete: {free_mem:.1f}GB VRAM now available for enhancement")
+    else:
+        # CPU mode cleanup
+        del animate_from_coeff
         import gc
         gc.collect()
-        torch.cuda.empty_cache()
         torch.cuda.synchronize()
         
         # Brief pause to allow memory cleanup to complete

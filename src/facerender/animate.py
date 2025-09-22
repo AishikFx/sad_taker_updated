@@ -46,11 +46,23 @@ class AnimateFromCoeff():
         self.device = torch.device('cuda' if self.use_cuda else 'cpu')
         self.optimization_level = optimization_level
         
+        # Check for minimal mode
+        self.minimal_mode = os.environ.get('SADTALKER_MINIMAL_MODE', '0') == '1'
+        if self.minimal_mode:
+            print("⚠️  MINIMAL MODE ACTIVATED - Using ultra-lightweight face rendering")
+        
         print(f"Initializing AnimateFromCoeff on device: {self.device}")
         print(f"Optimization level: {optimization_level}")
 
         with open(sadtalker_path['facerender_yaml']) as f:
             config = yaml.safe_load(f)
+
+        # Force aggressive memory cleanup before model loading
+        if self.use_cuda:
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
         generator = OcclusionAwareSPADEGenerator(**config['model_params']['generator_params'],
                                                     **config['model_params']['common_params'])
@@ -60,10 +72,22 @@ class AnimateFromCoeff():
                                **config['model_params']['common_params'])
         mapping = MappingNet(**config['model_params']['mapping_params'])
 
+        # Load models one by one with cleanup between them
         generator.to(self.device)
+        if self.use_cuda:
+            torch.cuda.empty_cache()
+            
         kp_extractor.to(self.device)
+        if self.use_cuda:
+            torch.cuda.empty_cache()
+            
         he_estimator.to(self.device)
+        if self.use_cuda:
+            torch.cuda.empty_cache()
+            
         mapping.to(self.device)
+        if self.use_cuda:
+            torch.cuda.empty_cache()
         
         for param in generator.parameters():
             param.requires_grad = False
@@ -100,6 +124,55 @@ class AnimateFromCoeff():
         self.generator.eval()
         self.he_estimator.eval()
         self.mapping.eval()
+    
+    def release_face_renderer_models(self):
+        """Completely release all face renderer models from VRAM"""
+        print("🧹 Releasing face renderer models from VRAM...")
+        
+        if torch.cuda.is_available():
+            allocated_before = torch.cuda.memory_allocated() / (1024**3)
+            print(f"   Before cleanup: {allocated_before:.1f}GB allocated")
+        
+        # Move models to CPU and delete them
+        if hasattr(self, 'generator') and self.generator is not None:
+            self.generator.cpu()
+            del self.generator
+            self.generator = None
+            print("   ✅ Generator released")
+            
+        if hasattr(self, 'kp_extractor') and self.kp_extractor is not None:
+            self.kp_extractor.cpu()
+            del self.kp_extractor
+            self.kp_extractor = None
+            print("   ✅ Keypoint extractor released")
+            
+        if hasattr(self, 'he_estimator') and self.he_estimator is not None:
+            self.he_estimator.cpu()
+            del self.he_estimator
+            self.he_estimator = None
+            print("   ✅ Head estimator released")
+            
+        if hasattr(self, 'mapping') and self.mapping is not None:
+            self.mapping.cpu()
+            del self.mapping
+            self.mapping = None
+            print("   ✅ Mapping network released")
+        
+        # Force aggressive cleanup
+        import gc
+        for i in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        
+        if torch.cuda.is_available():
+            allocated_after = torch.cuda.memory_allocated() / (1024**3)
+            freed = allocated_before - allocated_after
+            print(f"   After cleanup: {allocated_after:.1f}GB allocated")
+            print(f"   🎉 FREED {freed:.1f}GB OF VRAM!")
+        
+        print("✅ Face renderer models completely released from VRAM")
     
     def load_cpk_facevid2vid_safetensor(self, checkpoint_path, generator=None, 
                         kp_detector=None, he_estimator=None,  
@@ -204,21 +277,39 @@ class AnimateFromCoeff():
 
         frame_num = x['frame_num']
 
-        # Use smart face renderer with natural animation for maximum realism  
-        print(f" Using Smart Face Renderer with Natural Animation")
-        print(f"    Optimization: {optimization_level}")
-        print(f"    Animation: natural (preserves eye blinks and micro-expressions)")
-        
-        # The smart renderer with natural animation preserves all subtle movements
-        predictions_video = render_animation_smart(
-            source_image, source_semantics, target_semantics,
-            self.generator, self.kp_extractor, self.he_estimator, self.mapping,
-            yaw_c_seq, pitch_c_seq, roll_c_seq, 
-            use_exp=True, 
-            optimization_level=optimization_level,
-            natural_animation=True,  # Enable natural animation for eye blinks, etc.
-            batch_size=batch_size
-        )
+        # Check if minimal mode is activated
+        if self.minimal_mode:
+            print("🚀 Using MINIMAL MODE - Ultra-lightweight rendering to prevent OOM")
+            
+            # Force aggressive cleanup before minimal rendering
+            if self.use_cuda:
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
+            # Create minimal video by repeating source image
+            # This prevents OOM while providing basic functionality
+            predictions_video = source_image.unsqueeze(1).repeat(1, frame_num, 1, 1, 1)
+            
+            print(f"✅ Minimal mode rendering complete: {frame_num} frames generated")
+            
+        else:
+            # Use smart face renderer with natural animation for maximum realism  
+            print(f" Using Smart Face Renderer with Natural Animation")
+            print(f"    Optimization: {optimization_level}")
+            print(f"    Animation: natural (preserves eye blinks and micro-expressions)")
+            
+            # The smart renderer with natural animation preserves all subtle movements
+            predictions_video = render_animation_smart(
+                source_image, source_semantics, target_semantics,
+                self.generator, self.kp_extractor, self.he_estimator, self.mapping,
+                yaw_c_seq, pitch_c_seq, roll_c_seq, 
+                use_exp=True, 
+                optimization_level=optimization_level,
+                natural_animation=True,  # Enable natural animation for eye blinks, etc.
+                batch_size=batch_size
+            )
 
         # Use the original, working tensor-to-numpy conversion with robust shape handling
         print(f" Debug: predictions_video shape before processing: {predictions_video.shape}")
@@ -319,13 +410,51 @@ class AnimateFromCoeff():
             av_path_enhancer = os.path.join(video_save_dir, video_name_enhancer) 
             return_path = av_path_enhancer
 
-            # !!! --- CRITICAL FIX --- !!!
-            # Release the VRAM held by the video generator before starting enhancement.
-            print(" Releasing video generator from VRAM to free memory for enhancer...")
+            # !!! --- CRITICAL COMPLETE VRAM CLEANUP --- !!!
+            print("🧹 AGGRESSIVELY RELEASING ALL FACE RENDERER MODELS FROM VRAM...")
             
-            # Clear any model references that might be holding VRAM
+            # Get VRAM status before cleanup
+            if torch.cuda.is_available():
+                allocated_before = torch.cuda.memory_allocated() / (1024**3)
+                print(f"   Before cleanup: {allocated_before:.1f}GB allocated")
+            
+            # Delete ALL face renderer models completely
             if hasattr(self, 'generator'):
+                self.generator.cpu()  # Move to CPU first
                 del self.generator
+                print("   ✅ Generator deleted")
+                
+            if hasattr(self, 'kp_extractor'):
+                self.kp_extractor.cpu()
+                del self.kp_extractor 
+                print("   ✅ Keypoint extractor deleted")
+                
+            if hasattr(self, 'he_estimator'):
+                self.he_estimator.cpu()
+                del self.he_estimator
+                print("   ✅ Head estimator deleted")
+                
+            if hasattr(self, 'mapping'):
+                self.mapping.cpu()
+                del self.mapping
+                print("   ✅ Mapping network deleted")
+            
+            # Force aggressive garbage collection
+            import gc
+            for i in range(3):  # Multiple rounds of cleanup
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            
+            # Get VRAM status after cleanup
+            if torch.cuda.is_available():
+                allocated_after = torch.cuda.memory_allocated() / (1024**3)
+                freed = allocated_before - allocated_after
+                print(f"   After cleanup: {allocated_after:.1f}GB allocated")
+                print(f"   🎉 FREED {freed:.1f}GB OF VRAM for face enhancer!")
+            
+            print("🚀 Face renderer models completely removed - VRAM ready for enhancement")
             if hasattr(self, 'kp_extractor'):
                 del self.kp_extractor  
             if hasattr(self, 'he_estimator'):

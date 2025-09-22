@@ -1,7 +1,7 @@
 import os
 import time
 import uuid
-from typing import List
+from typing import List, Dict
 import cv2
 import numpy as np
 import torch

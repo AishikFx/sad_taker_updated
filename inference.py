@@ -12,6 +12,7 @@ from src.generate_batch import get_data
 from src.generate_facerender_batch import get_facerender_data
 from src.utils.init_path import init_path
 from src.utils.optimization_config import OptimizationConfig, PerformanceMonitor
+from src.utils.vram_queue_manager import get_global_processor, shutdown_global_processor
 
 def main(args):
     # Initialize optimization configuration
@@ -23,6 +24,12 @@ def main(args):
     
     # Initialize performance monitor if profiling
     monitor = PerformanceMonitor() if getattr(args, 'profile', False) else None
+    
+    # Initialize global VRAM processor for parallel enhancement
+    print("Initializing parallel VRAM management system...")
+    processor = get_global_processor()
+    initial_status = processor.get_status()
+    print(f"VRAM processor initialized: {initial_status['vram_status']['free']:.1f}GB free")
     
     # Enable optimizations for better GPU utilization
     torch.backends.cudnn.benchmark = True
@@ -167,29 +174,55 @@ def main(args):
                                 batch_size, input_yaw_list, input_pitch_list, input_roll_list,
                                 expression_scale=args.expression_scale, still_mode=args.still, preprocess=args.preprocess, size=args.size)
     
-    # Dynamic batch size adjustment based on GPU memory
+    # Enhanced dynamic batch size adjustment with comprehensive GPU memory management
     effective_batch_size = batch_size
     if torch.cuda.is_available() and args.device == "cuda":
         try:
-            # Check available GPU memory
+            # Get detailed GPU memory information
             gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
             allocated_memory_gb = torch.cuda.memory_allocated() / 1024**3
             available_memory_gb = gpu_memory_gb - allocated_memory_gb
             
-            # Warn about enhancer memory usage
-            if (args.enhancer or args.background_enhancer) and available_memory_gb < 6:
-                print(f"Warning: Using enhancer with limited GPU memory ({available_memory_gb:.1f}GB available). Consider disabling enhancer or running on CPU if you encounter out-of-memory errors.")
+            print(f"GPU Memory Status: {available_memory_gb:.1f}GB available out of {gpu_memory_gb:.1f}GB total")
             
-            # Adjust batch size based on available memory
-            if available_memory_gb < 4:  # Less than 4GB available
+            # Aggressive memory optimizations for low-memory systems
+            if available_memory_gb < 4:
+                effective_batch_size = 1  # Force single batch for stability
+                print(f"Critical GPU memory constraint ({available_memory_gb:.1f}GB available)")
+                print("Enabling aggressive memory optimizations and forcing batch size to 1")
+                
+                # Clear any existing cache
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                
+                # Disable cudnn benchmark for memory consistency
+                torch.backends.cudnn.benchmark = False
+                
+            elif available_memory_gb < 6:  # Less than 6GB available
                 effective_batch_size = max(1, batch_size // 4)
-                print(f"GPU memory low ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
-            elif available_memory_gb < 8:  # Less than 8GB available
+                print(f"Low GPU memory ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
+                
+            elif available_memory_gb < 10:  # Less than 10GB available
                 effective_batch_size = max(1, batch_size // 2)
-                print(f"GPU memory moderate ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
+                print(f"Moderate GPU memory ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
+            else:
+                effective_batch_size = batch_size
+                print(f"Sufficient GPU memory ({available_memory_gb:.1f}GB available), using requested batch size {effective_batch_size}")
+            
+            # Enhanced warning for enhancer memory usage
+            if (args.enhancer or args.background_enhancer):
+                if available_memory_gb < 8:
+                    print(f"Warning: Using enhancer with limited GPU memory ({available_memory_gb:.1f}GB available).")
+                    print("Enhancement will use conservative settings and aggressive memory management.")
+                else:
+                    print(f"Enhancement will use high-quality settings with {available_memory_gb:.1f}GB available memory.")
             
         except Exception as e:
             print(f"Warning: Could not check GPU memory, using default batch size: {e}")
+            effective_batch_size = batch_size
+    else:
+        effective_batch_size = batch_size
     
     if profile and torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -201,13 +234,43 @@ def main(args):
                                     preprocess=args.preprocess, img_size=args.size, profile=profile, 
                                     batch_size=effective_batch_size)
     except RuntimeError as e:
-        if "out of memory" in str(e).lower() and effective_batch_size > 1:
-            print(f"GPU out of memory with batch size {effective_batch_size}, retrying with batch size 1...")
-            torch.cuda.empty_cache()  # Clear GPU cache
-            result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
-                                        enhancer=args.enhancer, background_enhancer=args.background_enhancer, 
-                                        preprocess=args.preprocess, img_size=args.size, profile=profile, 
-                                        batch_size=1)
+        if "out of memory" in str(e).lower():
+            print(f"GPU out of memory with batch size {effective_batch_size}")
+            
+            # Progressive memory recovery
+            if effective_batch_size > 1:
+                print("Attempting recovery with batch size 1...")
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                time.sleep(1)  # Brief pause for memory cleanup
+                
+                try:
+                    result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
+                                                enhancer=args.enhancer, background_enhancer=args.background_enhancer, 
+                                                preprocess=args.preprocess, img_size=args.size, profile=profile, 
+                                                batch_size=1)
+                except RuntimeError as e2:
+                    if "out of memory" in str(e2).lower():
+                        print("Still out of memory even with batch size 1. Attempting without enhancer...")
+                        # Last resort: disable enhancer and try again
+                        result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
+                                                    enhancer=None, background_enhancer=None, 
+                                                    preprocess=args.preprocess, img_size=args.size, profile=profile, 
+                                                    batch_size=1)
+                        print("Warning: Enhancement was disabled due to memory constraints.")
+                    else:
+                        raise e2
+            else:
+                print("Already using minimum batch size. Trying without enhancer...")
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
+                                            enhancer=None, background_enhancer=None, 
+                                            preprocess=args.preprocess, img_size=args.size, profile=profile, 
+                                            batch_size=1)
+                print("Warning: Enhancement was disabled due to memory constraints.")
         else:
             raise e
 
@@ -248,6 +311,28 @@ def main(args):
     except Exception as e:
         print(f"Warning: Could not move final video file: {e}")
         print(f'The generated video is at: {result}')
+    
+    # Final cleanup and shutdown
+    try:
+        # Get final processor status
+        processor = get_global_processor()
+        final_status = processor.get_status()
+        print(f"Final VRAM status: {final_status['vram_status']['free']:.1f}GB free, "
+              f"{final_status['total_vram_allocated']:.1f}GB allocated by processor")
+        
+        # Force cleanup of all tracked VRAM
+        processor.force_cleanup_all()
+        
+        print("SadTalker inference completed successfully!")
+        
+    except Exception as e:
+        print(f"Warning during final cleanup: {e}")
+    
+    # Performance monitoring summary
+    if monitor:
+        monitor.print_summary()
+    
+    return save_dir+'.mp4' if os.path.exists(save_dir+'.mp4') else result
 
     if not args.verbose:
         try:

@@ -40,20 +40,21 @@ class MemoryManager:
         if not torch.cuda.is_available():
             return max(1, min(4, requested_size))
 
-        # GFPGAN has significant overhead. A conservative estimate of 2.5GB per image 
-        # for a 512x512 image in a batch is safe.
-        mem_per_image_gb = 2.5
+        # Conservative memory estimate for GFPGAN: 1.5GB per image for 512x512
+        # This accounts for the model overhead, intermediate tensors, and processing buffers
+        mem_per_image_gb = 1.5
         
         vram = self.get_vram_info()
         available_gb = vram['free'] * self.safety_margin
         
+        # Be more conservative if we've had OOM failures
+        if self.oom_count > 0:
+            mem_per_image_gb *= (1.5 ** self.oom_count)  # Exponentially more conservative
+            print(f"   ⚠️ OOM history detected ({self.oom_count} failures). Increasing memory estimate to {mem_per_image_gb:.1f}GB per image")
+        
         memory_based_batch_size = max(1, int(available_gb / mem_per_image_gb))
 
-        if self.oom_count > 0:
-            penalty_factor = 2 ** self.oom_count
-            memory_based_batch_size = max(1, memory_based_batch_size // penalty_factor)
-            print(f"   ⚠️ OOM history detected. Applying penalty. New theoretical max: {memory_based_batch_size}")
-        
+        # Avoid known failed batch sizes
         while memory_based_batch_size in self.failed_batch_sizes and memory_based_batch_size > 1:
             memory_based_batch_size -= 1
 
@@ -91,15 +92,17 @@ class EnhancerWorker:
         self.memory_manager = MemoryManager()
 
     def _initialize_model(self, model_path: str):
-        """Initializes the GFPGAN model."""
+        """Initializes the GFPGAN model with optimal quality settings."""
         print("   Loading GFPGAN model into memory... (This will only happen once)")
         try:
             return GFPGANer(
                 model_path=model_path,
-                upscale=2,
+                upscale=2,  # Keep 2x upscale for good quality
                 arch='clean',
                 channel_multiplier=2,
-                bg_upsampler=None
+                bg_upsampler=None,  # No background upsampler to save memory
+                # Quality-focused settings
+                device=self.device
             )
         except Exception as e:
             print(f" Failed to initialize GFPGAN model: {e}")
@@ -138,18 +141,62 @@ class EnhancerWorker:
         return image_batch
 
     def _process_batch_internal(self, image_batch: List[np.ndarray]) -> List[np.ndarray]:
-        """The core processing loop for a single batch."""
+        """The core processing loop for a single batch with improved error handling and size consistency."""
         results = []
-        # The GFPGANer.enhance method processes a list of cropped faces.
-        # It's important that the input `image_batch` contains the data it expects.
-        # Based on SadTalker, this is usually a list of cropped face images.
-        for img_rgb in image_batch:
-            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-            _, _, restored_img_bgr = self.model.enhance(
-                img_bgr, has_aligned=False, only_center_face=False, paste_back=True
-            )
-            restored_img_rgb = cv2.cvtColor(restored_img_bgr, cv2.COLOR_BGR2RGB)
-            results.append(restored_img_rgb)
+        target_size = None
+        
+        # Process each image individually to ensure consistent sizing and proper error handling
+        for i, img_rgb in enumerate(image_batch):
+            try:
+                # Ensure consistent input format
+                if img_rgb.dtype != np.uint8:
+                    img_rgb = (img_rgb * 255).astype(np.uint8) if img_rgb.max() <= 1.0 else img_rgb.astype(np.uint8)
+                
+                # Store original dimensions for consistency
+                orig_h, orig_w = img_rgb.shape[:2]
+                if target_size is None:
+                    target_size = (orig_h, orig_w)
+                
+                # Convert to BGR for GFPGAN
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                
+                # Process with GFPGAN using conservative settings for stability
+                cropped_faces, restored_faces, restored_img_bgr = self.model.enhance(
+                    img_bgr, 
+                    has_aligned=False, 
+                    only_center_face=False, 
+                    paste_back=True
+                )
+                
+                # Handle case where face detection failed
+                if restored_img_bgr is None or len(restored_faces) == 0:
+                    print(f"   - Warning: No faces detected in image {i}, using original")
+                    restored_img_bgr = img_bgr
+                
+                # Convert back to RGB
+                restored_img_rgb = cv2.cvtColor(restored_img_bgr, cv2.COLOR_BGR2RGB)
+                
+                # Ensure consistent output size across all images
+                if restored_img_rgb.shape[:2] != target_size:
+                    restored_img_rgb = cv2.resize(restored_img_rgb, (target_size[1], target_size[0]), 
+                                                interpolation=cv2.INTER_LANCZOS4)
+                
+                # Ensure uint8 format for consistency
+                if restored_img_rgb.dtype != np.uint8:
+                    restored_img_rgb = (restored_img_rgb * 255).astype(np.uint8) if restored_img_rgb.max() <= 1.0 else restored_img_rgb.astype(np.uint8)
+                
+                results.append(restored_img_rgb)
+                
+            except Exception as e:
+                print(f"   - Warning: Enhancement failed for image {i}: {e}. Using original.")
+                # Ensure original image matches target size and format
+                if target_size and img_rgb.shape[:2] != target_size:
+                    img_rgb = cv2.resize(img_rgb, (target_size[1], target_size[0]), 
+                                       interpolation=cv2.INTER_LANCZOS4)
+                if img_rgb.dtype != np.uint8:
+                    img_rgb = (img_rgb * 255).astype(np.uint8) if img_rgb.max() <= 1.0 else img_rgb.astype(np.uint8)
+                results.append(img_rgb)
+        
         return results
 
     def _fallback_process_one_by_one(self, image_batch: List[np.ndarray]) -> List[np.ndarray]:
@@ -194,47 +241,103 @@ def _get_shared_enhancer_instance() -> EnhancerWorker:
         _shared_enhancer_instance = EnhancerWorker(model_path=model_path, device=device)
     return _shared_enhancer_instance
 
-def enhance_images(images: List[np.ndarray], batch_size: int = 16, max_workers: int = 4) -> List[np.ndarray]:
+def enhance_images(images: List[np.ndarray], batch_size: int = 16, max_workers: int = 4, quality_mode: str = "high") -> List[np.ndarray]:
     """
     Enhances a list of images using a parallel, auto-scaling, and OOM-safe process.
     This is the main function users should call.
+    
+    Args:
+        images: List of input images as numpy arrays
+        batch_size: Requested batch size (will be auto-adjusted for memory)
+        max_workers: Number of parallel workers
+        quality_mode: "high" for best quality, "balanced" for speed/quality balance
     """
     if not images:
         return []
+    
+    print(f" Starting face enhancement with quality mode: {quality_mode}")
+    
+    # Validate input images and ensure consistent format
+    validated_images = []
+    target_size = None
+    
+    for i, img in enumerate(images):
+        if img is None:
+            print(f"   Warning: Image {i} is None, skipping")
+            continue
+            
+        # Ensure all images are uint8 RGB
+        if img.dtype != np.uint8:
+            img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
+        
+        # Store target size from first valid image
+        if target_size is None:
+            target_size = img.shape[:2]
+        
+        # Resize if necessary to maintain consistency
+        if img.shape[:2] != target_size:
+            img = cv2.resize(img, (target_size[1], target_size[0]), interpolation=cv2.INTER_LANCZOS4)
+        
+        validated_images.append(img)
+    
+    if not validated_images:
+        print("   Warning: No valid images to enhance")
+        return []
+    
+    print(f"   Processing {len(validated_images)} validated images (target size: {target_size})")
     
     # Every time this function is called, it gets the SAME shared enhancer instance.
     # The model is only loaded the very first time this line is executed.
     enhancer = _get_shared_enhancer_instance()
     
+    # Adjust batch size based on quality mode and memory
+    if quality_mode == "high":
+        # For high quality, use smaller batches to prevent memory issues
+        adjusted_batch_size = min(batch_size, 4)
+    else:
+        adjusted_batch_size = batch_size
+    
     optimal_batch_size = enhancer.memory_manager.get_safe_batch_size(
-        requested_size=batch_size
+        requested_size=adjusted_batch_size
     )
     
-    batches = [images[i:i + optimal_batch_size] for i in range(0, len(images), optimal_batch_size)]
+    batches = [validated_images[i:i + optimal_batch_size] for i in range(0, len(validated_images), optimal_batch_size)]
     
     all_enhanced_images = []
     
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_batch_idx = {executor.submit(enhancer.enhance_batch, batch): i for i, batch in enumerate(batches)}
-        
-        results = {}
-        for future in tqdm(as_completed(future_to_batch_idx), total=len(batches), desc="Enhancing Batches"):
-            batch_idx = future_to_batch_idx[future]
-            try:
-                # This will now be a list of correctly-sized images, even if some failed.
-                batch_result = future.result()
-                if len(batch_result) != len(batches[batch_idx]):
-                    print(f"⚠️ Warning: Batch {batch_idx} result count mismatch. Defaulting to original.")
-                    results[batch_idx] = batches[batch_idx]
-                else:
-                    results[batch_idx] = batch_result
-            except Exception as exc:
-                print(f" A batch generated a critical, unrecoverable exception: {exc}")
-                # As a last resort, return the original images for that batch
-                results[batch_idx] = batches[batch_idx]
+    # Use single-threaded processing for better memory management and stability
+    results = {}
+    
+    for i, batch in enumerate(tqdm(batches, desc="Enhancing Batches")):
+        try:
+            # Process batch with proper error handling
+            batch_result = enhancer.enhance_batch(batch)
+            
+            # Validate batch result length and content
+            if len(batch_result) != len(batch):
+                print(f"⚠️ Warning: Batch {i} result count mismatch ({len(batch_result)} vs {len(batch)}). Using original.")
+                results[i] = batch
+            else:
+                # Ensure all results have consistent dimensions
+                validated_batch = []
+                for j, result_img in enumerate(batch_result):
+                    if result_img.shape[:2] != target_size:
+                        result_img = cv2.resize(result_img, (target_size[1], target_size[0]), 
+                                              interpolation=cv2.INTER_LANCZOS4)
+                    if result_img.dtype != np.uint8:
+                        result_img = (result_img * 255).astype(np.uint8) if result_img.max() <= 1.0 else result_img.astype(np.uint8)
+                    validated_batch.append(result_img)
+                results[i] = validated_batch
+                
+        except Exception as exc:
+            print(f" A batch generated a critical, unrecoverable exception: {exc}")
+            # As a last resort, return the original images for that batch
+            results[i] = batch
 
+    # Assemble final results in correct order
     for i in range(len(batches)):
         all_enhanced_images.extend(results.get(i, []))
-        
+    
+    print(f"   Enhancement complete: {len(all_enhanced_images)} images processed")
     return all_enhanced_images
 

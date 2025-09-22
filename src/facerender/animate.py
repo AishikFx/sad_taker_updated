@@ -23,7 +23,7 @@ from src.facerender.modules.make_animation_fast import make_animation_fast
 
 from pydub import AudioSegment 
 # Import optimized face enhancer functions
-from src.utils.face_enhancer import enhance_images
+from src.utils.parallel_face_enhancer import enhance_images
 from src.utils.videoio import load_video_to_cv2
 from src.utils.paste_pic import paste_pic
 # Import optimized paste functions  
@@ -344,18 +344,50 @@ class AnimateFromCoeff():
             print(f" Memory cleanup complete. VRAM freed for enhancer.")
             # !!! -------------------- !!!
 
-            # Use new optimized face enhancer with automatic batch sizing
-            print(f" Using optimized face enhancer with auto-scaling batch size")
+            # Use new parallel face enhancer with dynamic VRAM management
+            print(f" Using parallel face enhancer with dynamic VRAM management")
             
             # Load video frames
             video_frames = load_video_to_cv2(full_video_path)
+            print(f" Loaded {len(video_frames)} frames for enhancement")
             
-            # Enhance frames using the new optimized enhancer
-            # The enhancer will automatically determine optimal batch size based on VRAM
-            enhanced_frames = enhance_images(video_frames, batch_size=batch_size if batch_size else 16)
+            # Enhance frames using the new parallel enhancer
+            # This will automatically manage VRAM, queue tasks, and process in parallel
+            enhanced_frames = enhance_images(video_frames, quality_mode="high")
             
-            # Save enhanced video
-            imageio.mimsave(enhanced_path, enhanced_frames, fps=float(25))
+            print(f" Enhanced {len(enhanced_frames)} frames")
+            
+            if enhanced_frames and len(enhanced_frames) > 0:
+                # Validate frame consistency (all frames should have same size)
+                target_height, target_width = enhanced_frames[0].shape[:2]
+                print(f" Target frame size: {target_height}x{target_width}")
+                
+                # Final validation pass to ensure all frames are consistent
+                validated_frames = []
+                for i, frame in enumerate(enhanced_frames):
+                    if frame.shape[:2] != (target_height, target_width):
+                        print(f"   Resizing frame {i} from {frame.shape[:2]} to {(target_height, target_width)}")
+                        frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_LANCZOS4)
+                    
+                    # Ensure proper data type
+                    if frame.dtype != np.uint8:
+                        frame = (frame * 255).astype(np.uint8) if frame.max() <= 1.0 else frame.astype(np.uint8)
+                    
+                    validated_frames.append(frame)
+                
+                print(f"   Validated {len(validated_frames)} enhanced frames with consistent size")
+                
+                # Save enhanced video with validated frames
+                try:
+                    imageio.mimsave(enhanced_path, validated_frames, fps=float(25))
+                    print(f" Successfully saved enhanced video to {enhanced_path}")
+                except Exception as e:
+                    print(f" Error saving enhanced video: {e}")
+                    print(" Falling back to original frames")
+                    imageio.mimsave(enhanced_path, video_frames, fps=float(25))
+            else:
+                print("   Warning: No enhanced frames generated, using original")
+                imageio.mimsave(enhanced_path, video_frames, fps=float(25))
             
             save_video_with_watermark(enhanced_path, new_audio_path, av_path_enhancer, watermark= False)
             print(f'The generated video is named {video_save_dir}/{video_name_enhancer}')

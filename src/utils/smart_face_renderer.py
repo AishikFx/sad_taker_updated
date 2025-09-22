@@ -293,6 +293,14 @@ class SmartFaceRenderWorker:
                         he_driving_initial = mapping(first_target_semantics)
                         kp_driving_initial = keypoint_transformation(kp_canonical, he_driving_initial)
                         
+                        # Auto-detect if jacobians are available and adjust settings
+                        jacobians_available = all('jacobian' in kp for kp in [kp_source, kp_driving_initial, kp_driving])
+                        if not jacobians_available and self.use_relative_jacobian:
+                            print("🔧 Auto-disabling jacobian processing (jacobians not available from KPDetector)")
+                            self.use_relative_jacobian = False
+                        elif jacobians_available and self.use_relative_jacobian:
+                            print("✅ Jacobian processing enabled (jacobians available)")
+                        
                         self.keypoint_normalizer = KeypointNormalizer(
                             kp_source=kp_source,
                             kp_driving_initial=kp_driving_initial,

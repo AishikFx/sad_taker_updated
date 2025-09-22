@@ -80,8 +80,8 @@ def normalize_kp_production(kp_source, kp_driving, kp_driving_initial,
             
         kp_new['value'] = kp_value_diff + kp_source['value']
 
-        if use_relative_jacobian:
-            # Replace torch.inverse with stable solve operation
+        if use_relative_jacobian and 'jacobian' in kp_driving_initial and 'jacobian' in kp_driving and 'jacobian' in kp_source:
+            # Only process jacobians if they exist in all keypoint dictionaries
             batch_size, num_points, _, _ = kp_driving_initial['jacobian'].shape
             device = kp_driving_initial['jacobian'].device
             
@@ -102,6 +102,9 @@ def normalize_kp_production(kp_source, kp_driving, kp_driving_initial,
                 jacobian_diff = torch.matmul(kp_driving['jacobian'], 
                                            torch.linalg.pinv(kp_driving_initial['jacobian']))
                 kp_new['jacobian'] = torch.matmul(jacobian_diff, kp_source['jacobian'])
+        elif use_relative_jacobian:
+            # Skip jacobian processing if not available
+            print("⚠️ Warning: Jacobian processing requested but jacobians not available in keypoints")
 
     return kp_new
 
@@ -118,11 +121,19 @@ class KeypointNormalizer:
         self.kp_driving_initial = kp_driving_initial
         self.precomputed_scale = None
         
-        # Debug keypoint shapes
+        # Debug keypoint shapes and jacobian availability
         if kp_source is not None:
             print(f"🔍 KeypointNormalizer: source keypoints shape: {kp_source['value'].shape}")
+            if 'jacobian' in kp_source:
+                print(f"🔍 KeypointNormalizer: source jacobian shape: {kp_source['jacobian'].shape}")
+            else:
+                print("🔍 KeypointNormalizer: source jacobian not available")
         if kp_driving_initial is not None:
             print(f"🔍 KeypointNormalizer: driving_initial keypoints shape: {kp_driving_initial['value'].shape}")
+            if 'jacobian' in kp_driving_initial:
+                print(f"🔍 KeypointNormalizer: driving_initial jacobian shape: {kp_driving_initial['jacobian'].shape}")
+            else:
+                print("🔍 KeypointNormalizer: driving_initial jacobian not available")
         
         # Precompute scale factor if possible
         if adapt_movement_scale and kp_source is not None and kp_driving_initial is not None:
@@ -191,8 +202,15 @@ def get_rotation_matrix(yaw, pitch, roll):
 
 def keypoint_transformation(kp_canonical, he, wo_exp=False):
     kp = kp_canonical['value']    # (bs, k, 3) 
-    # Get the jacobian from the canonical keypoints, which was previously discarded.
-    jacobian = kp_canonical['jacobian'] # (bs, k, 3, 3)
+    
+    # Check if jacobian is available - it might not be if estimate_jacobian=False in KPDetector
+    if 'jacobian' in kp_canonical:
+        jacobian = kp_canonical['jacobian'] # (bs, k, 3, 3)
+    else:
+        # Create identity jacobian if not available
+        batch_size, num_kp = kp.shape[:2]
+        device = kp.device
+        jacobian = torch.eye(3, device=device).unsqueeze(0).unsqueeze(0).repeat(batch_size, num_kp, 1, 1)
 
     yaw, pitch, roll= he['yaw'], he['pitch'], he['roll']      
     yaw = headpose_pred_to_degree(yaw) 

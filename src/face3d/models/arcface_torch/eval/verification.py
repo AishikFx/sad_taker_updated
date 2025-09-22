@@ -276,8 +276,7 @@ def dumpR(data_set,
           backbone,
           batch_size,
           name='',
-          data_extra=None,
-          label_shape=None):
+          data_extra=None):
     print('dump verification embedding..')
     data_list = data_set[0]
     issame_list = data_set[1]

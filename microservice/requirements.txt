@@ -1,4 +1,4 @@
-# 🚀 SadTalker Microservice Requirements
+#  SadTalker Microservice Requirements
 # Production-ready dependencies for ultra-fast video generation
 
 # FastAPI and web framework

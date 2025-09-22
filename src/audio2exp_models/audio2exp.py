@@ -4,7 +4,7 @@ from torch import nn
 
 
 class Audio2Exp(nn.Module):
-    def __init__(self, netG, cfg, device, prepare_training_loss=False):
+    def __init__(self, netG, cfg, device):
         super(Audio2Exp, self).__init__()
         self.cfg = cfg
         self.device = device

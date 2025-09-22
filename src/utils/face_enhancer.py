@@ -35,7 +35,7 @@ class MemoryManager:
             'used': allocated_mem
         }
 
-    def get_safe_batch_size(self, requested_size: int, image_dims: tuple) -> int:
+    def get_safe_batch_size(self, requested_size: int) -> int:
         """Calculates a safe batch size based on available VRAM and past performance."""
         if not torch.cuda.is_available():
             return max(1, min(4, requested_size))
@@ -59,7 +59,7 @@ class MemoryManager:
 
         final_batch_size = min(requested_size, memory_based_batch_size)
         
-        print(f"   💡 MemoryManager: VRAM Free: {vram['free']:.2f}GB. Requested batch size: {requested_size}, Safe batch size: {final_batch_size}")
+        print(f"    MemoryManager: VRAM Free: {vram['free']:.2f}GB. Requested batch size: {requested_size}, Safe batch size: {final_batch_size}")
         return max(1, final_batch_size)
 
     def record_success(self, batch_size: int):
@@ -73,7 +73,7 @@ class MemoryManager:
             self.failed_batch_sizes.append(batch_size)
 
     def perform_oom_recovery(self):
-        print("🔧 CUDA OOM detected! Performing adaptive recovery...")
+        print("CUDA OOM detected! Performing adaptive recovery...")
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -102,7 +102,7 @@ class EnhancerWorker:
                 bg_upsampler=None
             )
         except Exception as e:
-            print(f"❌ Failed to initialize GFPGAN model: {e}")
+            print(f" Failed to initialize GFPGAN model: {e}")
             return None
 
     def enhance_batch(self, image_batch: List[np.ndarray]) -> List[np.ndarray]:
@@ -123,15 +123,15 @@ class EnhancerWorker:
                     self.memory_manager.record_oom_failure(len(image_batch))
                     self.memory_manager.perform_oom_recovery()
                     if attempt < max_retries - 1:
-                        print(f"🔄 Retrying batch (attempt {attempt + 2}/{max_retries})")
+                        print(f"Retrying batch (attempt {attempt + 2}/{max_retries})")
                         time.sleep(1)
                     else:
                         # If batch processing fails after retries, trigger the safer fallback
-                        print("❌ Batch processing failed due to persistent OOM. Switching to safer one-by-one fallback mode for this batch.")
+                        print(" Batch processing failed due to persistent OOM. Switching to safer one-by-one fallback mode for this batch.")
                         return self._fallback_process_one_by_one(image_batch)
                 else:
                     # Re-raise errors that are not OOM
-                    print(f"❌ A non-OOM error occurred in batch processing: {e}")
+                    print(f" A non-OOM error occurred in batch processing: {e}")
                     raise e
         
         # This part should ideally not be reached, but as a final safeguard:
@@ -188,7 +188,7 @@ def _get_shared_enhancer_instance() -> EnhancerWorker:
     """
     global _shared_enhancer_instance
     if _shared_enhancer_instance is None:
-        print("🚀 Initializing shared Enhancer for the first time...")
+        print(" Initializing shared Enhancer for the first time...")
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_path = 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth'
         _shared_enhancer_instance = EnhancerWorker(model_path=model_path, device=device)
@@ -207,8 +207,7 @@ def enhance_images(images: List[np.ndarray], batch_size: int = 16, max_workers: 
     enhancer = _get_shared_enhancer_instance()
     
     optimal_batch_size = enhancer.memory_manager.get_safe_batch_size(
-        requested_size=batch_size, 
-        image_dims=images[0].shape
+        requested_size=batch_size
     )
     
     batches = [images[i:i + optimal_batch_size] for i in range(0, len(images), optimal_batch_size)]
@@ -230,7 +229,7 @@ def enhance_images(images: List[np.ndarray], batch_size: int = 16, max_workers: 
                 else:
                     results[batch_idx] = batch_result
             except Exception as exc:
-                print(f"❌ A batch generated a critical, unrecoverable exception: {exc}")
+                print(f" A batch generated a critical, unrecoverable exception: {exc}")
                 # As a last resort, return the original images for that batch
                 results[batch_idx] = batches[batch_idx]
 

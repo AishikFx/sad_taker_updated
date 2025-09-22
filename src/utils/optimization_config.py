@@ -190,7 +190,7 @@ class OptimizationConfig:
             if gpu_memory < 6:
                 print("⚠️  Low GPU memory detected. Consider 'ultra_fast' preset for better performance.")
             elif gpu_memory >= 12:
-                print("✅ Excellent GPU memory. All presets should work well.")
+                print(" Excellent GPU memory. All presets should work well.")
         
         print("="*30)
 

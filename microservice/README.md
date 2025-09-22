@@ -1,12 +1,12 @@
-# 🎯 SadTalker Microservice Setup Guide
+# SadTalker Microservice Setup Guide
 # Complete setup instructions for ultra-fast video generation service
 
 """
 # SadTalker Ultra-Fast Microservice
 
-🚀 **Performance**: 4-6x faster video generation (3-5s vs 15-20s)
-🎯 **Technology**: FastAPI + Redis caching + Optimized SadTalker pipeline
-📊 **Features**: VIP queue, background processing, comprehensive monitoring
+ **Performance**: 4-6x faster video generation (3-5s vs 15-20s)
+**Technology**: FastAPI + Redis caching + Optimized SadTalker pipeline
+ **Features**: VIP queue, background processing, comprehensive monitoring
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ python complete_app.py
 # http://localhost:8000/docs
 ```
 
-## 🎯 API Usage Examples
+## API Usage Examples
 
 ### Upload Avatar (First Time)
 ```bash
@@ -54,7 +54,7 @@ curl -X POST "http://localhost:8000/api/avatar/upload" \
   "image_id": "abc123...",
   "status": "processing",
   "estimated_time": "15-20 seconds (first time only)",
-  "message": "🚀 Avatar processing started. Future generations will be 4-6x faster!"
+  "message": " Avatar processing started. Future generations will be 4-6x faster!"
 }
 ```
 
@@ -65,7 +65,7 @@ curl "http://localhost:8000/api/avatar/status/abc123"
 # Response when ready
 {
   "image_id": "abc123",
-  "status": "✅ ready", 
+  "status": " ready", 
   "performance_ready": {
     "generation_time": "3-5 seconds (vs 15-20s uncached)",
     "speedup": "4-6x faster"
@@ -114,7 +114,7 @@ curl "http://localhost:8000/api/vip/download/sess456" \
   --output generated_video.mp4
 ```
 
-## 📊 Performance Monitoring
+##  Performance Monitoring
 
 ### Cache Statistics
 ```bash
@@ -138,7 +138,7 @@ curl "http://localhost:8000/api/cache/stats"
 }
 ```
 
-## 🔧 Configuration
+## Configuration
 
 ### Redis Configuration
 ```python
@@ -176,7 +176,7 @@ SESSION_TTL = 60 * 60  # 1 hour
 ├── Face Crop & Alignment (~1MB, saves 0.5-1s)
 └── Face Mesh Generation (~500KB, saves 1-2s)
 
-🚀 TIER 2: Pre-generated Content (7 days)
+ TIER 2: Pre-generated Content (7 days)
 ├── Basic Gestures (~1MB, 5 gestures)
 ├── Phoneme Visemes (~1MB, 14 phonemes)
 └── Background Processing (~2MB, for full mode)
@@ -195,7 +195,7 @@ visemes:{image_hash}
 session:{session_id}
 ```
 
-## 🚀 Production Deployment
+##  Production Deployment
 
 ### Docker Setup
 ```dockerfile
@@ -264,7 +264,7 @@ export SADTALKER_CHECKPOINTS_PATH=/path/to/checkpoints
 - **Memory**: 6-7MB cache per unique image
 - **Network**: Faster response times due to reduced processing
 
-## 🔍 Troubleshooting
+##  Troubleshooting
 
 ### Common Issues
 1. **Redis Connection Failed**

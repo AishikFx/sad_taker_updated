@@ -1,4 +1,3 @@
-from scipy.spatial import ConvexHull
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -123,17 +122,17 @@ class KeypointNormalizer:
         
         # Debug keypoint shapes and jacobian availability
         if kp_source is not None:
-            print(f"🔍 KeypointNormalizer: source keypoints shape: {kp_source['value'].shape}")
+            print(f" KeypointNormalizer: source keypoints shape: {kp_source['value'].shape}")
             if 'jacobian' in kp_source:
-                print(f"🔍 KeypointNormalizer: source jacobian shape: {kp_source['jacobian'].shape}")
+                print(f" KeypointNormalizer: source jacobian shape: {kp_source['jacobian'].shape}")
             else:
-                print("🔍 KeypointNormalizer: source jacobian not available")
+                print(" KeypointNormalizer: source jacobian not available")
         if kp_driving_initial is not None:
-            print(f"🔍 KeypointNormalizer: driving_initial keypoints shape: {kp_driving_initial['value'].shape}")
+            print(f" KeypointNormalizer: driving_initial keypoints shape: {kp_driving_initial['value'].shape}")
             if 'jacobian' in kp_driving_initial:
-                print(f"🔍 KeypointNormalizer: driving_initial jacobian shape: {kp_driving_initial['jacobian'].shape}")
+                print(f" KeypointNormalizer: driving_initial jacobian shape: {kp_driving_initial['jacobian'].shape}")
             else:
-                print("🔍 KeypointNormalizer: driving_initial jacobian not available")
+                print(" KeypointNormalizer: driving_initial jacobian not available")
         
         # Precompute scale factor if possible
         if adapt_movement_scale and kp_source is not None and kp_driving_initial is not None:
@@ -146,9 +145,9 @@ class KeypointNormalizer:
                 # Handle batch dimension for display - take first element or mean
                 if self.precomputed_scale.numel() > 1:
                     display_scale = self.precomputed_scale.mean().item()
-                    print(f"🚀 Precomputed keypoint scale factor (batch avg): {display_scale:.4f}")
+                    print(f" Precomputed keypoint scale factor (batch avg): {display_scale:.4f}")
                 else:
-                    print(f"🚀 Precomputed keypoint scale factor: {self.precomputed_scale.item():.4f}")
+                    print(f" Precomputed keypoint scale factor: {self.precomputed_scale.item():.4f}")
             except Exception as e:
                 print(f"⚠️ Warning: Failed to precompute scale factor: {e}")
                 print(f"   Falling back to dynamic scale computation")
@@ -252,7 +251,7 @@ def keypoint_transformation(kp_canonical, he, wo_exp=False):
 def make_animation(source_image, source_semantics, target_semantics,
                             generator, kp_detector, he_estimator, mapping, 
                             yaw_c_seq=None, pitch_c_seq=None, roll_c_seq=None,
-                            use_exp=True, use_half=False):
+                            use_exp=True):
     with torch.no_grad():
         predictions = []
 

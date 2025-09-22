@@ -7,7 +7,6 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import numpy as np
-from scipy.spatial import ConvexHull
 
 def headpose_pred_to_degree(pred):
     device = pred.device

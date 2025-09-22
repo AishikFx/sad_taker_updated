@@ -38,7 +38,7 @@ In `resize` mode, we resize the whole images to generate the fully talking head 
 
 | <img src='../examples/source_image/full_body_2.png' width='380'> |  <img src='../examples/source_image/full4.jpeg' width='380'> |
 |:--------------------: |:--------------------: |
-| ❌ not suitable for resize mode | ✅ good for resize mode |
+|  not suitable for resize mode |  good for resize mode |
 | <img src='resize_no.gif'> |  <img src='resize_good.gif' width='380'> |
 
 In `full` mode, our model will automatically process the croped region and paste back to the original image. Remember to use `--still` to keep the original head pose.

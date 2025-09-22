@@ -1,10 +1,9 @@
-# this scripts installs necessary requirements and launches main program in webui.py
+# this scripts installs necessary requirements and launches main program
 # borrow from : https://github.com/AUTOMATIC1111/stable-diffusion-webui/blob/master/launch.py
 import subprocess
 import os
 import sys
 import importlib.util
-import shlex
 import platform
 import json
 
@@ -15,9 +14,6 @@ stored_commit_hash = None
 skip_install = False
 dir_repos = "repositories"
 script_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-
-if 'GRADIO_ANALYTICS_ENABLED' not in os.environ:
-    os.environ['GRADIO_ANALYTICS_ENABLED'] = 'False'
 
 
 def check_python_version():
@@ -39,9 +35,8 @@ This program is tested with 3.10.6 Python, but you have {major}.{minor}.{micro}.
 If you encounter an error with "RuntimeError: Couldn't install torch." message,
 or any other error regarding unsuccessful package (library) installation,
 please downgrade (or upgrade) to the latest version of 3.10 Python
-and delete current Python and "venv" folder in WebUI's directory.
+and delete current Python and "venv" folder in SadTalker's directory.
 You can download 3.10 Python from here: https://www.python.org/downloads/release/python-3109/
-{"Alternatively, use a binary release of WebUI: https://github.com/AUTOMATIC1111/stable-diffusion-webui/releases" if is_windows else ""}
 Use --skip-python-version-check to suppress this warning.
 """)
 
@@ -186,14 +181,14 @@ def prepare_environment():
     if not is_installed("torch") or not is_installed("torchvision"):
         run(f'"{python}" -m {torch_command}', "Installing torch and torchvision", "Couldn't install torch", live=True)
 
-    run_pip(f"install -r \"{requirements_file}\"", "requirements for SadTalker WebUI (may take longer time in first time)")
+    run_pip(f"install -r \"{requirements_file}\"", "requirements for SadTalker (may take longer time in first time)")
 
     if sys.platform != 'win32' and not is_installed('tts'):
         run_pip(f"install TTS", "install TTS individually in SadTalker, which might not work on windows.")
 
 
 def start():
-    print(f"Launching SadTalker Web UI")
+    print(f"Launching SadTalker")
     from app_sadtalker import sadtalker_demo
     demo = sadtalker_demo()
     demo.queue()

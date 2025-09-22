@@ -1,10 +1,10 @@
-# 🎯 Redis Schema Design & Caching Strategy
+# Redis Schema Design & Caching Strategy
 # Optimized for SadTalker microservice with TTL management
 
 """
 Redis Schema for SadTalker Caching System
 
-🔑 KEY PATTERNS:
+KEY PATTERNS:
 - face_detection:{image_hash}           # TTL: 30 days
 - face_crop:{image_hash}:{preprocess}   # TTL: 30 days  
 - 3dmm_coeffs:{image_hash}:{preprocess} # TTL: FOREVER (most important)
@@ -16,7 +16,7 @@ Redis Schema for SadTalker Caching System
 - enhance_params:{image_hash}:{enhancer} # TTL: 7 days
 - complete_processing:{image_hash}:{preprocess} # TTL: 30 days
 
-📊 STORAGE ESTIMATES PER IMAGE:
+ STORAGE ESTIMATES PER IMAGE:
 - Face Detection: ~5KB
 - Face Crop: ~1-2MB (includes cropped image)
 - 3DMM Coefficients: ~50KB (CRITICAL - saves 3-5 seconds)
@@ -26,7 +26,7 @@ Redis Schema for SadTalker Caching System
 - Background: ~2MB
 - Total per image: ~6-7MB
 
-⚡ PERFORMANCE IMPACT:
+ PERFORMANCE IMPACT:
 - First time: 15-20 seconds
 - With cache: 3-5 seconds
 - Speedup: 4-6x faster
@@ -36,7 +36,7 @@ import redis
 import pickle
 import json
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class SadTalkerRedisSchema:
         self.TTL_7_DAYS = 7 * 24 * 60 * 60    # 604,800 seconds  
         self.TTL_1_HOUR = 60 * 60             # 3,600 seconds
     
-    # 🔥 TIER 1: Core Image Processing (Cache Forever/Long Term)
+    # TIER 1: Core Image Processing (Cache Forever/Long Term)
     
     def cache_face_detection(self, image_hash: str, landmarks_data: Dict[str, Any]) -> bool:
         """Cache face detection results - High priority, 30 days TTL"""
@@ -67,7 +67,7 @@ class SadTalkerRedisSchema:
     
     def cache_3dmm_coeffs(self, image_hash: str, preprocess_mode: str, coeffs_data: Dict[str, Any]) -> bool:
         """
-        🌟 MOST IMPORTANT CACHE - 3DMM Coefficients
+        MOST IMPORTANT CACHE - 3DMM Coefficients
         Cache FOREVER - saves 3-5 seconds per request
         """
         key = f"3dmm_coeffs:{image_hash}:{preprocess_mode}"
@@ -98,7 +98,7 @@ class SadTalkerRedisSchema:
         key = f"face_mesh:{image_hash}:{preprocess_mode}"
         return self._get_with_metadata(key)
     
-    # 🚀 TIER 2: Pre-generated Animations (Cache Medium Term)
+    #  TIER 2: Pre-generated Animations (Cache Medium Term)
     
     def cache_gestures(self, image_hash: str, gestures_data: Dict[str, Any]) -> bool:
         """Cache pre-generated basic gestures - 7 days TTL"""
@@ -120,7 +120,7 @@ class SadTalkerRedisSchema:
         key = f"visemes:{image_hash}"
         return self._get_with_metadata(key)
     
-    # ⚡ TIER 3: Render Optimizations (Cache Short Term)
+    #  TIER 3: Render Optimizations (Cache Short Term)
     
     def cache_background(self, image_hash: str, preprocess_mode: str, bg_data: Dict[str, Any]) -> bool:
         """Cache background processing for full mode - 7 days TTL"""
@@ -142,7 +142,7 @@ class SadTalkerRedisSchema:
         key = f"enhance_params:{image_hash}:{enhancer}"
         return self._get_with_metadata(key)
     
-    # 📋 Session Management (Cache Short Term)
+    # Session Management (Cache Short Term)
     
     def cache_session(self, session_id: str, session_data: Dict[str, Any]) -> bool:
         """Cache VIP session data - 1 hour TTL"""
@@ -165,7 +165,7 @@ class SadTalkerRedisSchema:
             return self.cache_session(session_id, session_data)
         return False
     
-    # 🎯 Complete Processing Cache
+    # Complete Processing Cache
     
     def cache_complete_processing(self, image_hash: str, preprocess_mode: str, result: Dict[str, Any]) -> bool:
         """Cache complete processing result - 30 days TTL"""
@@ -177,7 +177,7 @@ class SadTalkerRedisSchema:
         key = f"complete_processing:{image_hash}:{preprocess_mode}"
         return self._get_with_metadata(key)
     
-    # 📊 Cache Management & Statistics
+    #  Cache Management & Statistics
     
     def get_cache_statistics(self) -> Dict[str, Any]:
         """Get comprehensive cache statistics"""
@@ -220,7 +220,7 @@ class SadTalkerRedisSchema:
             return stats
             
         except Exception as e:
-            logger.error(f"❌ Failed to get cache statistics: {e}")
+            logger.error(f" Failed to get cache statistics: {e}")
             return {"error": "Failed to retrieve statistics"}
     
     def cleanup_expired_sessions(self) -> int:
@@ -235,11 +235,11 @@ class SadTalkerRedisSchema:
                     self.redis.delete(key)
                     cleaned += 1
             
-            logger.info(f"🧹 Cleaned up {cleaned} expired sessions")
+            logger.info(f" Cleaned up {cleaned} expired sessions")
             return cleaned
             
         except Exception as e:
-            logger.error(f"❌ Cleanup failed: {e}")
+            logger.error(f" Cleanup failed: {e}")
             return 0
     
     def get_image_cache_summary(self, image_hash: str) -> Dict[str, Any]:
@@ -284,7 +284,7 @@ class SadTalkerRedisSchema:
         
         return summary
     
-    # 🔧 Internal Helper Methods
+    # Internal Helper Methods
     
     def _cache_with_metadata(self, key: str, data: Dict[str, Any], ttl: int, data_type: str) -> bool:
         """Cache data with metadata"""
@@ -308,11 +308,11 @@ class SadTalkerRedisSchema:
             # Update counters
             self._increment_counter(f"cache_sets_{data_type}")
             
-            logger.info(f"✅ Cached {data_type}: {key} (TTL: {ttl})")
+            logger.info(f" Cached {data_type}: {key} (TTL: {ttl})")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Cache set failed for {key}: {e}")
+            logger.error(f" Cache set failed for {key}: {e}")
             return False
     
     def _get_with_metadata(self, key: str) -> Optional[Dict[str, Any]]:
@@ -335,7 +335,7 @@ class SadTalkerRedisSchema:
             return None
             
         except Exception as e:
-            logger.error(f"❌ Cache get failed for {key}: {e}")
+            logger.error(f" Cache get failed for {key}: {e}")
             return None
     
     def _increment_counter(self, counter_name: str) -> None:
@@ -343,7 +343,7 @@ class SadTalkerRedisSchema:
         try:
             self.redis.incr(f"counter:{counter_name}")
         except Exception as e:
-            logger.error(f"❌ Counter increment failed for {counter_name}: {e}")
+            logger.error(f" Counter increment failed for {counter_name}: {e}")
     
     def _get_counter(self, counter_name: str) -> int:
         """Get counter value"""
@@ -351,7 +351,7 @@ class SadTalkerRedisSchema:
             value = self.redis.get(f"counter:{counter_name}")
             return int(value) if value else 0
         except Exception as e:
-            logger.error(f"❌ Counter get failed for {counter_name}: {e}")
+            logger.error(f" Counter get failed for {counter_name}: {e}")
             return 0
     
     def _calculate_hit_rate(self) -> float:
@@ -375,10 +375,10 @@ class SadTalkerRedisSchema:
                 return 0.0
                 
         except Exception as e:
-            logger.error(f"❌ Hit rate calculation failed: {e}")
+            logger.error(f" Hit rate calculation failed: {e}")
             return 0.0
 
-# 🎯 Redis Configuration for SadTalker
+# Redis Configuration for SadTalker
 REDIS_CONFIG = {
     "host": "localhost",
     "port": 6379,

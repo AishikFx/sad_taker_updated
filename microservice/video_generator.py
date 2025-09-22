@@ -1,11 +1,11 @@
-# 🚀 Optimized Video Generation Service
+# Optimized Video Generation Service
 # Ultra-fast generation using cached SadTalker components
 
 import os
 import shutil
 import hashlib
 import numpy as np
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 import logging
 from datetime import datetime
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class OptimizedVideoGenerator:
     """
-    🎯 Ultra-optimized video generation service
+    Ultra-optimized video generation service
     Uses cached data to achieve 4-6x speedup (3-5s vs 15-20s)
     """
     
@@ -27,7 +27,7 @@ class OptimizedVideoGenerator:
         self.temp_dir = "/tmp/sadtalker_generation"
         os.makedirs(self.temp_dir, exist_ok=True)
         
-        logger.info("✅ OptimizedVideoGenerator initialized")
+        logger.info(" OptimizedVideoGenerator initialized")
     
     async def generate_video_ultra_fast(
         self,
@@ -39,7 +39,7 @@ class OptimizedVideoGenerator:
         quality: str = "medium"
     ) -> Dict[str, Any]:
         """
-        🚀 Main ultra-fast generation method
+         Main ultra-fast generation method
         
         Performance breakdown:
         - Cache loading: 0.01-0.03s (vs 8-10s computation)
@@ -50,7 +50,7 @@ class OptimizedVideoGenerator:
         start_time = datetime.now()
         generation_id = hashlib.sha256(audio_bytes).hexdigest()[:12]
         
-        logger.info(f"🚀 Starting ultra-fast generation: {generation_id}")
+        logger.info(f" Starting ultra-fast generation: {generation_id}")
         logger.info(f"   Image: {image_hash[:8]}... Mode: {preprocess_mode}")
         logger.info(f"   Audio size: {len(audio_bytes)} bytes")
         
@@ -59,7 +59,7 @@ class OptimizedVideoGenerator:
             cached_data = await self._load_all_cached_data(image_hash, preprocess_mode)
             
             load_time = (datetime.now() - start_time).total_seconds()
-            logger.info(f"⚡ Cached data loaded in {load_time:.3f}s (vs ~8s computation)")
+            logger.info(f" Cached data loaded in {load_time:.3f}s (vs ~8s computation)")
             
             # 2️⃣ Process audio (only uncacheable part)
             audio_start = datetime.now()
@@ -67,7 +67,7 @@ class OptimizedVideoGenerator:
                 audio_bytes, cached_data, generation_id, still
             )
             audio_time = (datetime.now() - audio_start).total_seconds()
-            logger.info(f"🎵 Audio processed in {audio_time:.3f}s")
+            # Audio processed in {audio_time:.3f}s
             
             # 3️⃣ Generate video using cached face data + new audio
             render_start = datetime.now()
@@ -75,7 +75,7 @@ class OptimizedVideoGenerator:
                 cached_data, audio_result, generation_id, enhancer, preprocess_mode, still, quality
             )
             render_time = (datetime.now() - render_start).total_seconds()
-            logger.info(f"🎬 Video rendered in {render_time:.3f}s")
+            # Video rendered in {render_time:.3f}s
             
             total_time = (datetime.now() - start_time).total_seconds()
             
@@ -100,7 +100,7 @@ class OptimizedVideoGenerator:
                 }
             }
             
-            logger.info(f"✅ Generation completed: {total_time:.3f}s ({15/total_time:.1f}x speedup)")
+            logger.info(f" Generation completed: {total_time:.3f}s ({15/total_time:.1f}x speedup)")
             
             # Update counters
             self.redis_schema._increment_counter("total_generated_videos")
@@ -109,7 +109,7 @@ class OptimizedVideoGenerator:
             return result
             
         except Exception as e:
-            logger.error(f"❌ Ultra-fast generation failed: {e}")
+            logger.error(f" Ultra-fast generation failed: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -118,53 +118,53 @@ class OptimizedVideoGenerator:
     
     async def _load_all_cached_data(self, image_hash: str, preprocess_mode: str) -> Dict[str, Any]:
         """
-        ⚡ Load all cached data instantly
+         Load all cached data instantly
         This is where the magic happens - replaces 8-10s of computation with 0.01s of cache access
         """
-        logger.info("⚡ Loading cached data (replaces heavy computation)...")
+        logger.info(" Loading cached data (replaces heavy computation)...")
         
         # Load critical cached components
         cached_data = {}
         
-        # 🌟 Most important: 3DMM coefficients (saves 3-5s)
+        # Most important: 3DMM coefficients (saves 3-5s)
         coeffs_data = self.redis_schema.get_3dmm_coeffs(image_hash, preprocess_mode)
         if not coeffs_data:
             raise ValueError(f"3DMM coefficients not found for {image_hash}. Please upload avatar first.")
         cached_data["3dmm_coeffs"] = coeffs_data
-        logger.info("✅ 3DMM coefficients loaded (saves 3-5s)")
+        logger.info(" 3DMM coefficients loaded (saves 3-5s)")
         
         # Face crop data (saves 0.5-1s)
         crop_data = self.redis_schema.get_face_crop(image_hash, preprocess_mode)
         if not crop_data:
             raise ValueError(f"Face crop data not found for {image_hash}")
         cached_data["face_crop"] = crop_data
-        logger.info("✅ Face crop data loaded (saves 0.5-1s)")
+        logger.info(" Face crop data loaded (saves 0.5-1s)")
         
         # Face detection (saves 1-2s)
         detection_data = self.redis_schema.get_face_detection(image_hash)
         if detection_data:
             cached_data["face_detection"] = detection_data
-            logger.info("✅ Face detection loaded (saves 1-2s)")
+            logger.info(" Face detection loaded (saves 1-2s)")
         
         # Gestures and visemes (nice to have)
         gestures_data = self.redis_schema.get_gestures(image_hash)
         if gestures_data:
             cached_data["gestures"] = gestures_data
-            logger.info("✅ Gestures loaded")
+            logger.info(" Gestures loaded")
         
         visemes_data = self.redis_schema.get_visemes(image_hash)
         if visemes_data:
             cached_data["visemes"] = visemes_data
-            logger.info("✅ Visemes loaded")
+            logger.info(" Visemes loaded")
         
         # Background data (for full mode)
         if preprocess_mode == "full":
             bg_data = self.redis_schema.get_background(image_hash, preprocess_mode)
             if bg_data:
                 cached_data["background"] = bg_data
-                logger.info("✅ Background data loaded")
+                logger.info(" Background data loaded")
         
-        logger.info(f"⚡ All cached data loaded: {len(cached_data)} components")
+        logger.info(f" All cached data loaded: {len(cached_data)} components")
         return cached_data
     
     async def _process_audio_optimized(
@@ -175,11 +175,11 @@ class OptimizedVideoGenerator:
         still: bool
     ) -> Dict[str, Any]:
         """
-        🎵 Process audio to coefficients
+        Process audio to coefficients
         This is the only part we can't cache (audio is unique per request)
         But we optimize it by using cached face data
         """
-        logger.info("🎵 Processing audio (only uncacheable component)...")
+        # Processing audio (only uncacheable component)...
         
         # Save audio to temp file
         audio_path = os.path.join(self.temp_dir, f"{generation_id}_audio.wav")
@@ -228,10 +228,10 @@ class OptimizedVideoGenerator:
         quality: str
     ) -> str:
         """
-        🎬 Render final video using cached face data + new audio coefficients
+        Render final video using cached face data + new audio coefficients
         This is optimized by using pre-computed face processing
         """
-        logger.info("🎬 Rendering video with cached face data...")
+        # Rendering video with cached face data...
         
         # Select appropriate animation model
         animate_model = (
@@ -279,7 +279,7 @@ class OptimizedVideoGenerator:
         final_video_path = os.path.join(self.temp_dir, f"{generation_id}_final.mp4")
         
         shutil.move(source_video, final_video_path)
-        logger.info(f"✅ Video saved to: {final_video_path}")
+        logger.info(f" Video saved to: {final_video_path}")
         
         # Cleanup temp files
         self._cleanup_temp_files(audio_result["audio_path"], audio_result["results_dir"])
@@ -315,7 +315,7 @@ class OptimizedVideoGenerator:
                 os.remove(audio_path)
             if os.path.exists(results_dir):
                 shutil.rmtree(results_dir)
-            logger.info("🧹 Temporary files cleaned up")
+            logger.info(" Temporary files cleaned up")
         except Exception as e:
             logger.warning(f"⚠️ Cleanup warning: {e}")
     
@@ -340,20 +340,20 @@ class OptimizedVideoGenerator:
                     "target_speedup": "4-6x faster"
                 },
                 "optimization_status": {
-                    "cache_optimization": "✅ Active",
-                    "audio_optimization": "✅ Active",
-                    "render_optimization": "✅ Active"
+                    "cache_optimization": " Active",
+                    "audio_optimization": " Active",
+                    "render_optimization": " Active"
                 }
             }
             
         except Exception as e:
-            logger.error(f"❌ Stats generation failed: {e}")
+            logger.error(f" Stats generation failed: {e}")
             return {"error": "Failed to generate statistics"}
 
-# 🎯 Pre-generated Content Manager
+# Pre-generated Content Manager
 class PreGeneratedContentManager:
     """
-    🚀 Manages pre-generated animations and gestures
+     Manages pre-generated animations and gestures
     Creates common animations when image is first processed
     """
     
@@ -363,7 +363,7 @@ class PreGeneratedContentManager:
     
     async def generate_basic_gestures(self, image_hash: str, coeff_path: str) -> Dict[str, Any]:
         """Generate basic gestures for fast access"""
-        logger.info(f"👋 Generating basic gestures for {image_hash[:8]}...")
+        # Generating basic gestures for {image_hash[:8]}...
         
         # In a real implementation, these would generate actual animation coefficients
         # For now, we'll create the structure
@@ -414,12 +414,12 @@ class PreGeneratedContentManager:
         # Cache the gestures
         self.redis_schema.cache_gestures(image_hash, gestures)
         
-        logger.info(f"✅ Generated {len(gestures)} basic gestures")
+        logger.info(f" Generated {len(gestures)} basic gestures")
         return gestures
     
     async def generate_phoneme_visemes(self, image_hash: str, coeff_path: str) -> Dict[str, Any]:
         """Generate all phoneme mouth shapes for lip-sync"""
-        logger.info(f"👄 Generating phoneme visemes for {image_hash[:8]}...")
+        # Generating phoneme visemes for {image_hash[:8]}...
         
         # Standard phonemes for English
         phonemes = [
@@ -444,12 +444,12 @@ class PreGeneratedContentManager:
         # Cache the visemes
         self.redis_schema.cache_visemes(image_hash, visemes)
         
-        logger.info(f"✅ Generated {len(visemes)} phoneme visemes")
+        logger.info(f" Generated {len(visemes)} phoneme visemes")
         return visemes
     
     async def create_default_animations(self, image_hash: str, coeff_path: str) -> Dict[str, Any]:
         """Create a set of default animations for backup/standby"""
-        logger.info(f"🎬 Creating default animations for {image_hash[:8]}...")
+        # Creating default animations for {image_hash[:8]}...
         
         # Generate both gestures and visemes
         gestures = await self.generate_basic_gestures(image_hash, coeff_path)
@@ -462,5 +462,5 @@ class PreGeneratedContentManager:
             "total_animations": len(gestures) + len(visemes)
         }
         
-        logger.info(f"✅ Created {default_animations['total_animations']} default animations")
+        logger.info(f" Created {default_animations['total_animations']} default animations")
         return default_animations

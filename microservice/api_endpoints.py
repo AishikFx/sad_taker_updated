@@ -1,4 +1,4 @@
-# 🎯 Video Generation Engine - Ultra Fast with Caching
+# Video Generation Engine - Ultra Fast with Caching
 
 from .main import (
     CacheKeys,
@@ -45,10 +45,10 @@ class VideoGenerator:
         enhancer: str = "gfpgan"
     ) -> str:
         """
-        ⚡ Ultra-fast video generation using ALL cached data
+         Ultra-fast video generation using ALL cached data
         Time: ~3-5 seconds vs ~15-20 seconds without cache
         """
-        logger.info(f"🚀 Ultra-fast generation for {image_hash[:8]}...")
+        logger.info(f" Ultra-fast generation for {image_hash[:8]}...")
         
         # Load ALL cached data instantly (0.01s each vs seconds of computation)
         coeffs_data = cache_get(CacheKeys.dmm_coeffs(image_hash, preprocess_mode))
@@ -58,7 +58,7 @@ class VideoGenerator:
         if not coeffs_data or not crop_data:
             raise HTTPException(status_code=404, detail="Cached image data not found. Please upload image first.")
         
-        logger.info("⚡ Loaded cached data instantly (0.03s vs 8s)")
+        logger.info(" Loaded cached data instantly (0.03s vs 8s)")
         
         # Save audio to temp file
         audio_hash = hashlib.sha256(audio_bytes).hexdigest()
@@ -67,7 +67,7 @@ class VideoGenerator:
             f.write(audio_bytes)
         
         # Only process audio (2-3 seconds) - can't cache this as it's unique
-        logger.info("🎵 Processing audio to coefficients...")
+        # Processing audio to coefficients...
         
         results_dir = f"/tmp/results_{audio_hash}"
         os.makedirs(results_dir, exist_ok=True)
@@ -86,10 +86,10 @@ class VideoGenerator:
             batch, results_dir, pose_style=0, ref_pose_coeff_path=None
         )
         
-        logger.info("✅ Audio processed to coefficients")
+        logger.info(" Audio processed to coefficients")
         
         # Generate final video using cached face data + new audio data (1-2 seconds)
-        logger.info("🎬 Rendering final video...")
+        # Rendering final video...
         
         animate_model = (
             self.models.animate_from_coeff["full"] 
@@ -138,13 +138,13 @@ class VideoGenerator:
         if os.path.exists(temp_audio_path):
             os.remove(temp_audio_path)
         
-        logger.info(f"✅ Video generated: {final_video_path}")
+        logger.info(f" Video generated: {final_video_path}")
         return final_video_path
 
 # Initialize video generator
 video_generator = VideoGenerator(models)
 
-# 📊 Queue Management for VIP Processing
+#  Queue Management for VIP Processing
 class VIPQueue:
     def __init__(self):
         self.queue = asyncio.Queue()
@@ -161,7 +161,7 @@ class VIPQueue:
         # Store in Redis for tracking
         cache_set(CacheKeys.session(session_id), request_data, ttl=3600)  # 1 hour
         
-        logger.info(f"📋 Added to VIP queue: {session_id}")
+        # Added to VIP queue: {session_id}
         return session_id
     
     async def process_queue(self):
@@ -172,7 +172,7 @@ class VIPQueue:
                     self.processing = True
                     request = await self.queue.get()
                     
-                    logger.info(f"🎬 Processing VIP request: {request['session_id']}")
+                    # Processing VIP request: {request['session_id']}
                     
                     # Update status to generating
                     request["status"] = "generating"
@@ -192,10 +192,10 @@ class VIPQueue:
                         request["video_path"] = video_path
                         cache_set(CacheKeys.session(request["session_id"]), request, ttl=3600)
                         
-                        logger.info(f"✅ VIP request completed: {request['session_id']}")
+                        logger.info(f" VIP request completed: {request['session_id']}")
                         
                     except Exception as e:
-                        logger.error(f"❌ VIP generation failed: {e}")
+                        logger.error(f" VIP generation failed: {e}")
                         request["status"] = "failed"
                         request["error"] = str(e)
                         cache_set(CacheKeys.session(request["session_id"]), request, ttl=3600)
@@ -205,14 +205,14 @@ class VIPQueue:
                     await asyncio.sleep(0.1)
                     
             except Exception as e:
-                logger.error(f"❌ Queue processing error: {e}")
+                logger.error(f" Queue processing error: {e}")
                 self.processing = False
                 await asyncio.sleep(1)
 
 # Initialize VIP queue
 vip_queue = VIPQueue()
 
-# 🌟 API Endpoints
+# API Endpoints
 
 @app.get("/")
 async def root():
@@ -234,7 +234,7 @@ async def upload_avatar(
     preprocess_mode: str = "full"
 ):
     """
-    🔥 TIER 1: Avatar Setup & Caching
+    TIER 1: Avatar Setup & Caching
     Processes image and caches ALL expensive computations
     """
     try:
@@ -242,14 +242,14 @@ async def upload_avatar(
         image_bytes = await image_file.read()
         image_hash = hash_image(image_bytes)
         
-        logger.info(f"📸 Avatar upload: {image_hash[:8]}... Size: {len(image_bytes)} bytes")
+        # Avatar upload: {image_hash[:8]}... Size: {len(image_bytes)} bytes
         
         # Check if already processed
         session_key = f"complete_processing:{image_hash}:{preprocess_mode}"
         existing = cache_get(session_key)
         
         if existing:
-            logger.info(f"⚡ Avatar already processed: {image_hash[:8]}")
+            logger.info(f" Avatar already processed: {image_hash[:8]}")
             return {
                 "image_id": image_hash,
                 "status": "already_processed",
@@ -275,16 +275,16 @@ async def upload_avatar(
         }
         
     except Exception as e:
-        logger.error(f"❌ Avatar upload failed: {e}")
+        logger.error(f" Avatar upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Avatar processing failed: {str(e)}")
 
 async def process_avatar_background(image_bytes: bytes, image_hash: str, preprocess_mode: str):
     """Background task for avatar processing"""
     try:
         result = await image_processor.process_image_full_pipeline(image_bytes, preprocess_mode)
-        logger.info(f"✅ Background processing completed for {image_hash[:8]}")
+        logger.info(f" Background processing completed for {image_hash[:8]}")
     except Exception as e:
-        logger.error(f"❌ Background processing failed for {image_hash[:8]}: {e}")
+        logger.error(f" Background processing failed for {image_hash[:8]}: {e}")
 
 @app.get("/api/avatar/status/{image_id}")
 async def check_avatar_status(image_id: str, preprocess_mode: str = "full"):
@@ -298,11 +298,11 @@ async def check_avatar_status(image_id: str, preprocess_mode: str = "full"):
             "status": "ready",
             "processing_stages": list(result["processing_stages"].keys()),
             "cached_data": {
-                "face_detection": "✅",
-                "3dmm_coeffs": "✅ (MOST IMPORTANT)",
-                "face_crop": "✅", 
-                "gestures": "✅",
-                "visemes": "✅"
+                "face_detection": "",
+                "3dmm_coeffs": " (MOST IMPORTANT)",
+                "face_crop": "", 
+                "gestures": "",
+                "visemes": ""
             }
         }
     else:
@@ -320,7 +320,7 @@ async def generate_vip_video(
     preprocess_mode: str = "full"
 ):
     """
-    🚀 TIER 2: Ultra-Fast VIP Video Generation
+     TIER 2: Ultra-Fast VIP Video Generation
     Uses cached data for 4-6x faster generation
     """
     try:
@@ -334,7 +334,7 @@ async def generate_vip_video(
         
         # Read audio
         audio_bytes = await audio_file.read()
-        logger.info(f"🎵 VIP generation request: {image_id[:8]}... Audio: {len(audio_bytes)} bytes")
+        # VIP generation request: {image_id[:8]}... Audio: {len(audio_bytes)} bytes
         
         # Add to VIP queue
         request_data = {
@@ -356,7 +356,7 @@ async def generate_vip_video(
         }
         
     except Exception as e:
-        logger.error(f"❌ VIP generation failed: {e}")
+        logger.error(f" VIP generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"VIP generation failed: {str(e)}")
 
 @app.get("/api/vip/status/{session_id}")
@@ -436,19 +436,19 @@ async def cache_statistics():
         return stats
         
     except Exception as e:
-        logger.error(f"❌ Cache stats failed: {e}")
+        logger.error(f" Cache stats failed: {e}")
         return {"error": "Failed to get cache statistics"}
 
-# 🚀 Background task to process VIP queue
+#  Background task to process VIP queue
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks"""
-    logger.info("🚀 Starting SadTalker Microservice...")
+    logger.info(" Starting SadTalker Microservice...")
     
     # Start VIP queue processor
     asyncio.create_task(vip_queue.process_queue())
     
-    logger.info("✅ Background tasks started")
+    logger.info(" Background tasks started")
 
 if __name__ == "__main__":
     import uvicorn

@@ -8,7 +8,7 @@ from PIL import Image
 import torch
 from tqdm import tqdm
 from itertools import cycle
-from torch.multiprocessing import Pool, Process, set_start_method
+from torch.multiprocessing import Pool, set_start_method
 
 from facexlib.alignment import landmark_98_to_68
 from facexlib.detection import init_detection_model
@@ -16,7 +16,7 @@ from facexlib.detection import init_detection_model
 from facexlib.utils import load_file_from_url
 from src.face3d.util.my_awing_arch import FAN
 
-def init_alignment_model(model_name, half=False, device='cuda', model_rootpath=None):
+def init_alignment_model(model_name, device='cuda', model_rootpath=None):
     if model_name == 'awing_fan':
         model = FAN(num_modules=4, num_landmarks=98, device=device)
         model_url = 'https://github.com/xinntao/facexlib/releases/download/v0.1.0/alignment_WFLW_4HG.pth'
@@ -36,7 +36,7 @@ class KeypointExtractor():
 
         ### gfpgan/weights
         try:
-            import webui  # in webui
+            # in webui
             root_path = 'extensions/SadTalker/gfpgan/weights' 
 
         except:

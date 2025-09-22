@@ -20,7 +20,6 @@ from src.facerender.modules.generator import OcclusionAwareGenerator, OcclusionA
 from src.facerender.modules.make_animation import make_animation
 # Import optimized versions
 from src.facerender.modules.make_animation_fast import make_animation_fast
-from src.utils.fast_seamless_clone import fast_seamless_clone, process_video_frames_fast 
 
 from pydub import AudioSegment 
 # Import optimized face enhancer functions
@@ -34,7 +33,7 @@ from src.utils.videoio import save_video_with_watermark
 from src.utils.smart_face_renderer import render_animation_smart
 
 try:
-    import webui  # in webui
+    # in webui
     in_webui = True
 except:
     in_webui = False
@@ -206,9 +205,9 @@ class AnimateFromCoeff():
         frame_num = x['frame_num']
 
         # Use smart face renderer with natural animation for maximum realism  
-        print(f"🚀 Using Smart Face Renderer with Natural Animation")
-        print(f"   ⚡ Optimization: {optimization_level}")
-        print(f"   🎭 Animation: natural (preserves eye blinks and micro-expressions)")
+        print(f" Using Smart Face Renderer with Natural Animation")
+        print(f"    Optimization: {optimization_level}")
+        print(f"    Animation: natural (preserves eye blinks and micro-expressions)")
         
         # The smart renderer with natural animation preserves all subtle movements
         predictions_video = render_animation_smart(
@@ -222,7 +221,7 @@ class AnimateFromCoeff():
         )
 
         # Use the original, working tensor-to-numpy conversion with robust shape handling
-        print(f"🔍 Debug: predictions_video shape before processing: {predictions_video.shape}")
+        print(f" Debug: predictions_video shape before processing: {predictions_video.shape}")
         predictions_video = predictions_video.reshape((-1,)+predictions_video.shape[2:])
         predictions_video = predictions_video[:frame_num]
 
@@ -254,7 +253,7 @@ class AnimateFromCoeff():
                     raise ValueError(f"Cannot handle image shape: {image.shape}")
             
             video.append(image)
-        print(f"✅ Successfully processed {len(video)} video frames")
+        print(f" Successfully processed {len(video)} video frames")
         result = img_as_ubyte(video)
 
         ### the generated video is 256x256, so we keep the aspect ratio, 
@@ -321,7 +320,7 @@ class AnimateFromCoeff():
 
             # !!! --- CRITICAL FIX --- !!!
             # Release the VRAM held by the video generator before starting enhancement.
-            print("🧹 Releasing video generator from VRAM to free memory for enhancer...")
+            print(" Releasing video generator from VRAM to free memory for enhancer...")
             
             # Clear any model references that might be holding VRAM
             if hasattr(self, 'generator'):
@@ -341,11 +340,11 @@ class AnimateFromCoeff():
             
             # Brief pause to allow memory cleanup to complete
             time.sleep(0.5)
-            print(f"✅ Memory cleanup complete. VRAM freed for enhancer.")
+            print(f" Memory cleanup complete. VRAM freed for enhancer.")
             # !!! -------------------- !!!
 
             # Use new optimized face enhancer with automatic batch sizing
-            print(f"🚀 Using optimized face enhancer with auto-scaling batch size")
+            print(f" Using optimized face enhancer with auto-scaling batch size")
             
             # Load video frames
             video_frames = load_video_to_cv2(full_video_path)

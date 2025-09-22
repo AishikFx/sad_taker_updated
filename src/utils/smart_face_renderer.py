@@ -6,15 +6,14 @@ This version focuses on natural animation quality while maintaining performance 
 import os
 import time
 import gc
-from typing import Dict, Any, Optional, Tuple
-from contextlib import contextmanager
+from typing import Dict, Any, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
 # Import the basic animation functions we need
-from src.facerender.modules.make_animation import KeypointNormalizer, get_rotation_matrix, keypoint_transformation
+from src.facerender.modules.make_animation import get_rotation_matrix, keypoint_transformation
 
 # --- Layer 1: Memory Manager for Face Renderer ---
 
@@ -92,7 +91,7 @@ class FaceRenderMemoryManager:
 
     def perform_oom_recovery(self):
         """Perform memory cleanup after OOM."""
-        print("🔧 Face Renderer CUDA OOM detected! Performing recovery...")
+        print("Face Renderer CUDA OOM detected! Performing recovery...")
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
@@ -116,9 +115,9 @@ class SmartFaceRenderWorker:
         self.total_frames_processed = 0
         self.total_processing_time = 0.0
         
-        print(f"🚀 SmartFaceRenderWorker initialized:")
-        print(f"   ⚡ Optimization: {optimization_level}")
-        print(f"   🎭 Natural Animation: {'Enabled (raw keypoints for realism)' if natural_animation else 'Disabled (optimized keypoints)'}")
+        print(f" SmartFaceRenderWorker initialized:")
+        print(f"    Optimization: {optimization_level}")
+        print(f"    Natural Animation: {'Enabled (raw keypoints for realism)' if natural_animation else 'Disabled (optimized keypoints)'}")
 
     def render_animation_smart(self, 
                               source_image: torch.Tensor, 
@@ -141,9 +140,9 @@ class SmartFaceRenderWorker:
         img_size = source_image.shape[-1]
         optimal_batch_size = self.memory_manager.get_safe_batch_size(requested_batch_size, img_size)
         
-        print(f"📊 Smart Face Renderer: Processing {frame_count} frames")
+        print(f" Smart Face Renderer: Processing {frame_count} frames")
         if self.natural_animation:
-            print(f"   🎭 Using natural animation mode for maximum realism")
+            print(f"    Using natural animation mode for maximum realism")
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -162,7 +161,7 @@ class SmartFaceRenderWorker:
                 self.total_processing_time += processing_time
                 
                 fps = frame_count / processing_time
-                print(f"✅ Face Rendering Complete! {fps:.2f} FPS ({processing_time:.2f}s)")
+                print(f" Face Rendering Complete! {fps:.2f} FPS ({processing_time:.2f}s)")
                 
                 return result
                 
@@ -173,7 +172,7 @@ class SmartFaceRenderWorker:
                     optimal_batch_size = max(1, optimal_batch_size // 2)
                     
                     if attempt < max_retries - 1:
-                        print(f"🔄 Face Renderer OOM retry {attempt + 2}/{max_retries} with batch size {optimal_batch_size}")
+                        print(f"Face Renderer OOM retry {attempt + 2}/{max_retries} with batch size {optimal_batch_size}")
                         time.sleep(1)
                     else:
                         return self._render_with_batch_size(

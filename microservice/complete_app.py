@@ -1,4 +1,4 @@
-# 🎯 Complete FastAPI Application with All Components
+# Complete FastAPI Application with All Components
 
 """
 SadTalker Microservice - Complete Implementation
@@ -21,7 +21,7 @@ API Endpoints:
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
-from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import redis
 import asyncio
@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI
 app = FastAPI(
     title="SadTalker Ultra-Fast Microservice",
-    description="🚀 AI talking head video generation with intelligent caching - 4-6x faster than standard processing",
+    description=" AI talking head video generation with intelligent caching - 4-6x faster than standard processing",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -74,7 +74,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🔧 Global Components Initialization
+# Global Components Initialization
 class SadTalkerService:
     """Main service class that initializes all components"""
     
@@ -89,14 +89,14 @@ class SadTalkerService:
         
     async def initialize(self):
         """Initialize all service components"""
-        logger.info("🚀 Initializing SadTalker Service...")
+        logger.info(" Initializing SadTalker Service...")
         
         try:
             # Initialize Redis
             self.redis_client = redis.Redis(**REDIS_CONFIG)
             self.redis_client.ping()  # Test connection
             self.redis_schema = SadTalkerRedisSchema(self.redis_client)
-            logger.info("✅ Redis connected and schema initialized")
+            logger.info(" Redis connected and schema initialized")
             
             # Initialize SadTalker models
             await self._initialize_models()
@@ -110,15 +110,15 @@ class SadTalkerService:
             # Initialize VIP queue
             self.vip_queue = VIPQueue(self.video_generator, self.redis_schema)
             
-            logger.info("✅ SadTalker Service fully initialized")
+            logger.info(" SadTalker Service fully initialized")
             
         except Exception as e:
-            logger.error(f"❌ Service initialization failed: {e}")
+            logger.error(f" Service initialization failed: {e}")
             raise
     
     async def _initialize_models(self):
         """Initialize SadTalker models"""
-        logger.info("🧠 Loading SadTalker models...")
+        logger.info("Loading SadTalker models...")
         
         # Initialize paths
         sadtalker_paths = init_path("../checkpoints", os.path.join("../src", "config"))
@@ -135,12 +135,12 @@ class SadTalkerService:
             "paths": sadtalker_paths
         }
         
-        logger.info("✅ SadTalker models loaded successfully")
+        logger.info(" SadTalker models loaded successfully")
 
 # Global service instance
 service = SadTalkerService()
 
-# 📋 VIP Queue Implementation
+# VIP Queue Implementation
 class VIPQueue:
     """Manages VIP video generation queue with background processing"""
     
@@ -166,12 +166,12 @@ class VIPQueue:
         # Add to queue
         await self.queue.put(request_data)
         
-        logger.info(f"📋 VIP request queued: {session_id} (Queue size: {self.queue.qsize()})")
+        logger.info(f"VIP request queued: {session_id} (Queue size: {self.queue.qsize()})")
         return session_id
     
     async def process_queue(self):
         """Background task to process VIP queue continuously"""
-        logger.info("🎬 VIP queue processor started")
+        logger.info("VIP queue processor started")
         
         while True:
             try:
@@ -180,7 +180,7 @@ class VIPQueue:
                     request = await self.queue.get()
                     self.current_session = request["session_id"]
                     
-                    logger.info(f"🎬 Processing VIP: {self.current_session}")
+                    logger.info(f"Processing VIP: {self.current_session}")
                     
                     # Update status to generating
                     self.redis_schema.update_session_status(
@@ -211,7 +211,7 @@ class VIPQueue:
                                     "completed_at": datetime.now().isoformat()
                                 }
                             )
-                            logger.info(f"✅ VIP completed: {self.current_session}")
+                            logger.info(f" VIP completed: {self.current_session}")
                         else:
                             # Mark as failed
                             self.redis_schema.update_session_status(
@@ -219,10 +219,10 @@ class VIPQueue:
                                 "failed",
                                 {"error": result["error"]}
                             )
-                            logger.error(f"❌ VIP failed: {self.current_session}")
+                            logger.error(f" VIP failed: {self.current_session}")
                     
                     except Exception as e:
-                        logger.error(f"❌ VIP processing error: {e}")
+                        logger.error(f" VIP processing error: {e}")
                         self.redis_schema.update_session_status(
                             self.current_session,
                             "failed", 
@@ -238,7 +238,7 @@ class VIPQueue:
                     await asyncio.sleep(0.1)
                     
             except Exception as e:
-                logger.error(f"❌ Queue processor error: {e}")
+                logger.error(f" Queue processor error: {e}")
                 self.processing = False
                 await asyncio.sleep(1)
     
@@ -250,7 +250,7 @@ class VIPQueue:
             "current_session": self.current_session
         }
 
-# 🌟 API Endpoints
+# API Endpoints
 
 @app.get("/")
 async def root():
@@ -262,7 +262,7 @@ async def root():
         return {
             "service": "SadTalker Ultra-Fast Microservice",
             "version": "1.0.0",
-            "status": "🚀 Running",
+            "status": " Running",
             "description": "AI talking head generation with 4-6x speedup via intelligent caching",
             "performance": {
                 "standard_processing": "15-20 seconds",
@@ -291,7 +291,7 @@ async def upload_avatar(
     preprocess_mode: str = Form(default="full", description="Processing mode: full, crop, or resize")
 ):
     """
-    🔥 Upload and process avatar image with full caching pipeline
+    Upload and process avatar image with full caching pipeline
     
     This endpoint:
     1. Processes the image through all expensive computations
@@ -307,19 +307,19 @@ async def upload_avatar(
         image_bytes = await image_file.read()
         image_hash = hashlib.sha256(image_bytes).hexdigest()
         
-        logger.info(f"📸 Avatar upload: {image_hash[:8]}... ({len(image_bytes)} bytes)")
+        # Avatar upload: {image_hash[:8]}... ({len(image_bytes)} bytes)
         
         # Check if already processed
         existing = service.redis_schema.get_complete_processing(image_hash, preprocess_mode)
         if existing:
-            logger.info(f"⚡ Avatar already cached: {image_hash[:8]}")
+            logger.info(f" Avatar already cached: {image_hash[:8]}")
             return {
                 "image_id": image_hash,
                 "status": "already_processed",
                 "preprocess_mode": preprocess_mode,
                 "cached_stages": list(existing["processing_stages"].keys()),
                 "cache_summary": service.redis_schema.get_image_cache_summary(image_hash),
-                "message": "✅ Avatar ready for ultra-fast generation"
+                "message": " Avatar ready for ultra-fast generation"
             }
         
         # Start background processing
@@ -336,18 +336,18 @@ async def upload_avatar(
             "status": "processing",
             "preprocess_mode": preprocess_mode,
             "estimated_time": "15-20 seconds (first time only)",
-            "message": "🚀 Avatar processing started. Future generations will be 4-6x faster!",
+            "message": " Avatar processing started. Future generations will be 4-6x faster!",
             "next_step": f"Check status: GET /api/avatar/status/{image_hash}"
         }
         
     except Exception as e:
-        logger.error(f"❌ Avatar upload failed: {e}")
+        logger.error(f" Avatar upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 async def process_avatar_pipeline(image_bytes: bytes, image_hash: str, preprocess_mode: str):
     """Background task for complete avatar processing pipeline"""
     try:
-        logger.info(f"🔥 Starting background processing: {image_hash[:8]}")
+        # Starting background processing: {image_hash[:8]}
         
         # Save temp image
         temp_path = f"/tmp/{image_hash}.jpg"
@@ -359,7 +359,7 @@ async def process_avatar_pipeline(image_bytes: bytes, image_hash: str, preproces
         os.makedirs(temp_dir, exist_ok=True)
         
         # 1. Face detection and landmarks
-        logger.info("🔍 Processing face detection...")
+        logger.info(" Processing face detection...")
         # This would extract actual landmarks in real implementation
         landmarks_data = {
             "landmarks_computed": True,
@@ -370,7 +370,7 @@ async def process_avatar_pipeline(image_bytes: bytes, image_hash: str, preproces
         service.redis_schema.cache_face_detection(image_hash, landmarks_data)
         
         # 2. 3DMM Extraction (MOST EXPENSIVE - 3-5 seconds)
-        logger.info("🧠 Processing 3DMM extraction (expensive operation)...")
+        # Processing 3DMM extraction (expensive operation)...
         first_coeff_path, crop_pic_path, crop_info = service.models["preprocess_model"].generate(
             temp_path, temp_dir, preprocess_mode, source_image_flag=True
         )
@@ -392,17 +392,17 @@ async def process_avatar_pipeline(image_bytes: bytes, image_hash: str, preproces
             }
             service.redis_schema.cache_face_crop(image_hash, preprocess_mode, crop_data)
             
-            logger.info("✅ Critical data cached (3DMM + crop)")
+            logger.info(" Critical data cached (3DMM + crop)")
             
             # 3. Generate pre-computed animations
-            logger.info("🎬 Generating default animations...")
+            # Generating default animations...
             animations = await service.content_manager.create_default_animations(
                 image_hash, first_coeff_path
             )
             
             # 4. Background processing (if full mode)
             if preprocess_mode == "full":
-                logger.info("🖼️ Processing background for full mode...")
+                # Processing background for full mode...
                 bg_data = {
                     "background_processed": True,
                     "mode": "full_body",
@@ -425,20 +425,20 @@ async def process_avatar_pipeline(image_bytes: bytes, image_hash: str, preproces
             
             service.redis_schema.cache_complete_processing(image_hash, preprocess_mode, complete_result)
             
-            logger.info(f"✅ Complete pipeline cached for {image_hash[:8]}")
+            logger.info(f" Complete pipeline cached for {image_hash[:8]}")
             
             # Update counters
             service.redis_schema._increment_counter("total_processed_images")
             
         else:
-            logger.error(f"❌ 3DMM extraction failed for {image_hash[:8]}")
+            logger.error(f" 3DMM extraction failed for {image_hash[:8]}")
             
         # Cleanup
         if os.path.exists(temp_path):
             os.remove(temp_path)
         
     except Exception as e:
-        logger.error(f"❌ Background processing failed for {image_hash[:8]}: {e}")
+        logger.error(f" Background processing failed for {image_hash[:8]}: {e}")
 
 @app.get("/api/avatar/status/{image_id}")
 async def check_avatar_status(image_id: str, preprocess_mode: str = "full"):
@@ -451,7 +451,7 @@ async def check_avatar_status(image_id: str, preprocess_mode: str = "full"):
             cache_summary = service.redis_schema.get_image_cache_summary(image_id)
             return {
                 "image_id": image_id,
-                "status": "✅ ready",
+                "status": " ready",
                 "preprocess_mode": preprocess_mode,
                 "processing_completed": result["completed_at"],
                 "cached_components": list(result["processing_stages"].keys()),
@@ -466,13 +466,13 @@ async def check_avatar_status(image_id: str, preprocess_mode: str = "full"):
         else:
             return {
                 "image_id": image_id,
-                "status": "🔄 processing",
+                "status": "processing",
                 "preprocess_mode": preprocess_mode,
                 "message": "Avatar still being processed and cached"
             }
             
     except Exception as e:
-        logger.error(f"❌ Status check failed: {e}")
+        logger.error(f" Status check failed: {e}")
         raise HTTPException(status_code=500, detail="Status check failed")
 
 @app.post("/api/vip/generate")
@@ -485,7 +485,7 @@ async def generate_vip_video(
     still: bool = Form(default=True, description="Still mode for stable output")
 ):
     """
-    🚀 Generate VIP video using cached avatar data - Ultra Fast!
+     Generate VIP video using cached avatar data - Ultra Fast!
     
     This endpoint uses cached facial data to achieve 4-6x speedup
     """
@@ -504,7 +504,7 @@ async def generate_vip_video(
         
         # Read audio
         audio_bytes = await audio_file.read()
-        logger.info(f"🎵 VIP request: {image_id[:8]}... Audio: {len(audio_bytes)} bytes")
+        # VIP request: {image_id[:8]}... Audio: {len(audio_bytes)} bytes
         
         # Prepare request for VIP queue
         request_data = {
@@ -537,7 +537,7 @@ async def generate_vip_video(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ VIP generation request failed: {e}")
+        logger.error(f" VIP generation request failed: {e}")
         raise HTTPException(status_code=500, detail=f"VIP request failed: {str(e)}")
 
 @app.get("/api/vip/status/{session_id}")
@@ -562,27 +562,27 @@ async def check_vip_status(session_id: str):
                 "download_url": f"/api/vip/download/{session_id}",
                 "performance": session_data.get("performance", {}),
                 "completed_at": session_data.get("completed_at"),
-                "message": "✅ Video ready for download"
+                "message": " Video ready for download"
             })
         elif session_data["status"] == "generating":
             response.update({
-                "message": "🎬 Generating video using cached data...",
+                "message": "Generating video using cached data...",
                 "started_at": session_data.get("started_at")
             })
         elif session_data["status"] == "failed":
             response.update({
-                "message": "❌ Generation failed",
+                "message": " Generation failed",
                 "error": session_data.get("error")
             })
         else:
-            response["message"] = "📋 Queued for processing"
+            response["message"] = "Queued for processing"
         
         return response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ VIP status check failed: {e}")
+        logger.error(f" VIP status check failed: {e}")
         raise HTTPException(status_code=500, detail="Status check failed")
 
 @app.get("/api/vip/download/{session_id}")
@@ -611,7 +611,7 @@ async def download_vip_video(session_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ VIP download failed: {e}")
+        logger.error(f" VIP download failed: {e}")
         raise HTTPException(status_code=500, detail="Download failed")
 
 @app.get("/api/cache/stats")
@@ -640,7 +640,7 @@ async def get_cache_statistics():
         }
         
     except Exception as e:
-        logger.error(f"❌ Stats generation failed: {e}")
+        logger.error(f" Stats generation failed: {e}")
         return {"error": "Failed to generate statistics"}
 
 @app.get("/api/image/{image_id}/summary")
@@ -658,10 +658,10 @@ async def get_image_cache_summary(image_id: str):
             }
         }
     except Exception as e:
-        logger.error(f"❌ Image summary failed: {e}")
+        logger.error(f" Image summary failed: {e}")
         raise HTTPException(status_code=500, detail="Summary generation failed")
 
-# 🚀 Startup and Shutdown Events
+#  Startup and Shutdown Events
 
 @app.on_event("startup")
 async def startup_event():
@@ -672,11 +672,11 @@ async def startup_event():
         # Start VIP queue processor
         asyncio.create_task(service.vip_queue.process_queue())
         
-        logger.info("✅ SadTalker Microservice started successfully")
-        logger.info("📚 API Documentation: http://localhost:8000/docs")
+        logger.info(" SadTalker Microservice started successfully")
+        logger.info("API Documentation: http://localhost:8000/docs")
         
     except Exception as e:
-        logger.error(f"❌ Startup failed: {e}")
+        logger.error(f" Startup failed: {e}")
         raise
 
 @app.on_event("shutdown")
@@ -687,12 +687,12 @@ async def shutdown_event():
         if service.redis_client:
             service.redis_client.close()
         
-        logger.info("👋 SadTalker Microservice shutdown complete")
+        logger.info("SadTalker Microservice shutdown complete")
         
     except Exception as e:
-        logger.error(f"❌ Shutdown error: {e}")
+        logger.error(f" Shutdown error: {e}")
 
-# 🎯 Main Application Entry Point
+# Main Application Entry Point
 if __name__ == "__main__":
     uvicorn.run(
         "complete_app:app",

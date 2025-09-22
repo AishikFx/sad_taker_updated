@@ -21,7 +21,7 @@ def as_numpy(v):
 
 
 class TorchTestCase(unittest.TestCase):
-    def assertTensorClose(self, a, b, atol=1e-3, rtol=1e-3):
+    def assertTensorClose(self, a, b, atol=1e-3):
         npa, npb = as_numpy(a), as_numpy(b)
         self.assertTrue(
                 np.allclose(npa, npb, atol=atol),

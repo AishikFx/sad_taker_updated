@@ -3,7 +3,6 @@ import cv2
 import time
 import glob
 import argparse
-import scipy
 import numpy as np
 from PIL import Image
 import torch

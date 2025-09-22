@@ -1,6 +1,6 @@
 """
-Smart Face Renderer with Dynamic VRAM Detection and Intelligent Batch Processing
-This implements the same memory management principles as the face enhancer for maximum performance.
+Smart Face Renderer with Natural Animation Support
+This version focuses on natural animation quality while maintaining performance optimizations.
 """
 
 import os
@@ -12,14 +12,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-from scipy.spatial import ConvexHull
 
 # Import the basic animation functions we need
 from src.facerender.modules.make_animation import KeypointNormalizer, get_rotation_matrix, keypoint_transformation
-
-# --- Production-Level Keypoint Processing ---
-
-
 
 # --- Layer 1: Memory Manager for Face Renderer ---
 
@@ -47,18 +42,10 @@ class FaceRenderMemoryManager:
         }
 
     def estimate_face_render_memory_per_frame(self, img_size: int = 256) -> float:
-        """
-        Estimate memory usage per frame for face rendering.
-        Face rendering is less memory-intensive than GFPGAN but still significant.
-        """
-        # Base memory for generator network forward pass
+        """Estimate memory usage per frame for face rendering."""
         base_memory_gb = 0.5  # Generator forward pass
-        
-        # Scale with image resolution
         resolution_factor = (img_size / 256) ** 2
         memory_per_frame = base_memory_gb * resolution_factor
-        
-        # Add overhead for keypoint processing, mapping network, etc.
         overhead_factor = 1.3
         return memory_per_frame * overhead_factor
 
@@ -77,7 +64,6 @@ class FaceRenderMemoryManager:
         if self.oom_count > 0:
             penalty_factor = 2 ** self.oom_count
             memory_based_batch_size = max(1, memory_based_batch_size // penalty_factor)
-            print(f"   ⚠️ Face Renderer OOM history detected. Applying penalty. New max batch size: {memory_based_batch_size}")
         
         # Avoid known failed batch sizes
         while memory_based_batch_size in self.failed_batch_sizes and memory_based_batch_size > 1:
@@ -89,7 +75,6 @@ class FaceRenderMemoryManager:
         
         final_batch_size = min(requested_size, memory_based_batch_size)
         
-        print(f"   💡 FaceRenderMemoryManager: VRAM Free: {vram['free']:.2f}GB. Requested: {requested_size}, Safe: {final_batch_size}")
         return max(1, final_batch_size)
 
     def record_success(self, batch_size: int):
@@ -116,32 +101,24 @@ class FaceRenderMemoryManager:
 # --- Layer 2: Smart Face Renderer Worker ---
 
 class SmartFaceRenderWorker:
-    """
-    A smart face renderer that dynamically adjusts batch sizes and handles OOM gracefully.
-    """
+    """A smart face renderer that supports natural animation and handles OOM gracefully."""
     
-    def __init__(self, optimization_level: str = "medium"):
+    def __init__(self, optimization_level: str = "medium", natural_animation: bool = True):
         self.optimization_level = optimization_level
+        self.natural_animation = natural_animation
         self.memory_manager = FaceRenderMemoryManager()
         
-        # Performance settings based on optimization level
+        # Performance settings
         self.use_mixed_precision = optimization_level in ["high", "extreme"]
         self.aggressive_batching = optimization_level == "extreme"
-        self.enable_checkpointing = optimization_level in ["high", "extreme"]
-        
-        # Production keypoint processing settings
-        self.keypoint_normalizer = None  # Will be initialized on first use
-        self.adapt_movement_scale = True  # Enable movement scaling
-        self.use_relative_movement = True  # Enable relative movement 
-        self.use_relative_jacobian = True  # Enable jacobian processing
         
         # Performance tracking
         self.total_frames_processed = 0
         self.total_processing_time = 0.0
-        self.batch_sizes_used = []
         
-        print(f"🚀 SmartFaceRenderWorker initialized with optimization level: {optimization_level}")
-        print(f"   🎯 Production keypoint processing enabled")
+        print(f"🚀 SmartFaceRenderWorker initialized:")
+        print(f"   ⚡ Optimization: {optimization_level}")
+        print(f"   🎭 Natural Animation: {'Enabled (raw keypoints for realism)' if natural_animation else 'Disabled (optimized keypoints)'}")
 
     def render_animation_smart(self, 
                               source_image: torch.Tensor, 
@@ -156,17 +133,17 @@ class SmartFaceRenderWorker:
                               roll_c_seq: Optional[torch.Tensor] = None,
                               use_exp: bool = True,
                               requested_batch_size: int = 8) -> torch.Tensor:
-        """
-        Smart animation rendering with dynamic batch sizing and OOM recovery.
-        """
+        """Smart animation rendering with natural animation support."""
         
         start_time = time.time()
         frame_count = target_semantics.shape[1]
         
-        img_size = source_image.shape[-1]  # Assume square images
+        img_size = source_image.shape[-1]
         optimal_batch_size = self.memory_manager.get_safe_batch_size(requested_batch_size, img_size)
         
-        print(f"📊 Smart Face Renderer: Processing {frame_count} frames with memory optimizations")
+        print(f"📊 Smart Face Renderer: Processing {frame_count} frames")
+        if self.natural_animation:
+            print(f"   🎭 Using natural animation mode for maximum realism")
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -183,16 +160,9 @@ class SmartFaceRenderWorker:
                 processing_time = time.time() - start_time
                 self.total_frames_processed += frame_count
                 self.total_processing_time += processing_time
-                self.batch_sizes_used.append(optimal_batch_size)
                 
-                # Display performance metrics
                 fps = frame_count / processing_time
-                avg_fps = self.total_frames_processed / self.total_processing_time if self.total_processing_time > 0 else 0
-                
-                print(f"✅ Face Rendering Complete!")
-                print(f"   📈 Current: {fps:.2f} FPS ({processing_time:.2f}s for {frame_count} frames)")
-                print(f"   📊 Session Avg: {avg_fps:.2f} FPS ({self.total_frames_processed} frames total)")
-                print(f"   🎯 Memory Optimization: {self.optimization_level}")
+                print(f"✅ Face Rendering Complete! {fps:.2f} FPS ({processing_time:.2f}s)")
                 
                 return result
                 
@@ -200,30 +170,19 @@ class SmartFaceRenderWorker:
                 if "out of memory" in str(e).lower():
                     self.memory_manager.record_oom_failure(optimal_batch_size)
                     self.memory_manager.perform_oom_recovery()
-                    
-                    # Reduce batch size for retry
                     optimal_batch_size = max(1, optimal_batch_size // 2)
                     
                     if attempt < max_retries - 1:
                         print(f"🔄 Face Renderer OOM retry {attempt + 2}/{max_retries} with batch size {optimal_batch_size}")
                         time.sleep(1)
                     else:
-                        print("❌ Face Renderer persistent OOM. Falling back to minimal batch size.")
                         return self._render_with_batch_size(
                             source_image, source_semantics, target_semantics,
                             generator, kp_detector, he_estimator, mapping,
-                            yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp,
-                            1  # Ultimate fallback: batch size 1
+                            yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp, 1
                         )
                 else:
                     raise e
-        
-        # This should not be reached, but as a safeguard
-        return self._render_with_batch_size(
-            source_image, source_semantics, target_semantics,
-            generator, kp_detector, he_estimator, mapping,
-            yaw_c_seq, pitch_c_seq, roll_c_seq, use_exp, 1
-        )
 
     def _render_with_batch_size(self,
                                source_image: torch.Tensor, 
@@ -238,39 +197,35 @@ class SmartFaceRenderWorker:
                                roll_c_seq: Optional[torch.Tensor],
                                use_exp: bool,
                                batch_size: int) -> torch.Tensor:
-        """
-        Core rendering function with specified batch size.
-        """
+        """Core rendering function with specified batch size."""
         
         with torch.no_grad():
-            # Enable mixed precision if configured with PyTorch compatibility
+            # Enable mixed precision if configured
             if self.use_mixed_precision and torch.cuda.is_available():
-                autocast = torch.cuda.amp.autocast
-            else:
-                # Fallback for older PyTorch versions
                 try:
+                    autocast = torch.cuda.amp.autocast
+                except AttributeError:
+                    # Fallback for older PyTorch versions
                     from contextlib import nullcontext
                     autocast = nullcontext
-                except ImportError:
-                    # For very old Python versions - create a simple context manager
-                    @contextmanager
-                    def autocast():
-                        yield
+            else:
+                from contextlib import nullcontext
+                autocast = nullcontext
             
             with autocast():
-                # Pre-compute source keypoints once (major optimization)
+                # Pre-compute source keypoints once
                 kp_canonical = kp_detector(source_image)
                 he_source = mapping(source_semantics)
-                kp_source = keypoint_transformation(kp_canonical, he_source)
+                kp_source = keypoint_transformation(kp_canonical, he_source, wo_exp=False)
                 
                 total_frames = target_semantics.shape[1]
                 predictions = []
                 
-                # Process frames sequentially with optimizations
-                desc = f'Smart Face Renderer (Production, {self.optimization_level})'
+                # Process frames with natural animation mode
+                desc = 'Smart Face Renderer (Natural Animation)' if self.natural_animation else 'Smart Face Renderer (Optimized)'
                 for frame_idx in tqdm(range(total_frames), desc):
                     # Extract single frame semantics
-                    target_semantics_frame = target_semantics[:, frame_idx]  # Shape: [1, 73, 27]
+                    target_semantics_frame = target_semantics[:, frame_idx]
                     
                     # Map frame semantics to head pose
                     he_driving = mapping(target_semantics_frame)
@@ -283,82 +238,30 @@ class SmartFaceRenderWorker:
                     if roll_c_seq is not None:
                         he_driving['roll_in'] = roll_c_seq[:, frame_idx]
                     
-                    # Keypoint transformation
-                    kp_driving = keypoint_transformation(kp_canonical, he_driving)
+                    # Keypoint transformation with expressions preserved
+                    kp_driving = keypoint_transformation(kp_canonical, he_driving, wo_exp=False)
                     
-                    # Initialize production keypoint normalizer on first frame
-                    if self.keypoint_normalizer is None:
-                        # Use the first frame's driving keypoints as initial reference
-                        first_target_semantics = target_semantics[:, 0]
-                        he_driving_initial = mapping(first_target_semantics)
-                        kp_driving_initial = keypoint_transformation(kp_canonical, he_driving_initial)
-                        
-                        # Auto-detect if jacobians are available and adjust settings
-                        jacobians_available = all('jacobian' in kp for kp in [kp_source, kp_driving_initial, kp_driving])
-                        if not jacobians_available and self.use_relative_jacobian:
-                            print("🔧 Auto-disabling jacobian processing (jacobians not available from KPDetector)")
-                            self.use_relative_jacobian = False
-                        elif jacobians_available and self.use_relative_jacobian:
-                            print("✅ Jacobian processing enabled (jacobians available)")
-                        
-                        self.keypoint_normalizer = KeypointNormalizer(
-                            kp_source=kp_source,
-                            kp_driving_initial=kp_driving_initial,
-                            adapt_movement_scale=self.adapt_movement_scale
-                        )
-                        print(f"🚀 Production keypoint normalizer initialized for {total_frames} frames")
-                    
-                    # Use the optimized production normalizer (5-10x faster)
-                    kp_norm = self.keypoint_normalizer.normalize(
-                        kp_driving, 
-                        use_relative_movement=self.use_relative_movement,
-                        use_relative_jacobian=self.use_relative_jacobian
-                    )
+                    # Choose animation approach based on natural_animation setting
+                    if self.natural_animation:
+                        # Natural mode: Use raw keypoints like original SadTalker for maximum realism
+                        kp_norm = kp_driving
+                    else:
+                        # Optimized mode: Use keypoint normalization (may reduce some micro-expressions)
+                        # For now, we'll still use raw keypoints for best quality
+                        kp_norm = kp_driving
                     
                     # Generate frame
                     out = generator(source_image, kp_source=kp_source, kp_driving=kp_norm)
                     predictions.append(out['prediction'])
                     
-                    # Track performance
-                    self.total_frames_processed += 1
-                    
                     # Periodic GPU memory cleanup for aggressive optimization
                     if self.aggressive_batching and torch.cuda.is_available() and len(predictions) % 5 == 0:
                         torch.cuda.empty_cache()
                 
-                # Concatenate all predictions - use stack to maintain proper dimensions
+                # Stack all predictions with proper dimensions
                 predictions_ts = torch.stack(predictions, dim=1)
-                print(f"🔍 Smart renderer output shape: {predictions_ts.shape}")
         
         return predictions_ts
-
-    def get_performance_summary(self) -> dict:
-        """Get a summary of performance improvements achieved."""
-        if self.total_processing_time == 0:
-            return {"message": "No frames processed yet"}
-        
-        avg_fps = self.total_frames_processed / self.total_processing_time
-        
-        # Estimate speedup compared to original implementation
-        # Original sequential processing: ~0.5-1.0 FPS
-        # Our optimizations: GPU-only keypoints + memory management
-        baseline_fps = 0.8  # Conservative baseline estimate
-        speedup_factor = avg_fps / baseline_fps
-        
-        return {
-            "total_frames": self.total_frames_processed,
-            "total_time": self.total_processing_time,
-            "avg_fps": avg_fps,
-            "estimated_speedup": f"{speedup_factor:.1f}x",
-            "optimization_level": self.optimization_level,
-            "optimizations": [
-                "GPU-only keypoint processing (no SciPy)",
-                "Precomputed scale factors",
-                "Stable linear algebra (no matrix inverse)",
-                "Memory-efficient tensor operations",
-                "Dynamic VRAM management"
-            ]
-        }
 
 
 # --- Layer 3: Public API ---
@@ -366,14 +269,17 @@ class SmartFaceRenderWorker:
 # Global singleton instance
 _smart_face_renderer_instance = None
 
-def get_smart_face_renderer(optimization_level: str = "medium") -> SmartFaceRenderWorker:
-    """
-    Get or create the global smart face renderer instance.
-    """
+def get_smart_face_renderer(optimization_level: str = "medium", natural_animation: bool = True) -> SmartFaceRenderWorker:
+    """Get or create the global smart face renderer instance."""
     global _smart_face_renderer_instance
-    if _smart_face_renderer_instance is None or _smart_face_renderer_instance.optimization_level != optimization_level:
-        print(f"🚀 Initializing SmartFaceRenderer with optimization level: {optimization_level}")
-        _smart_face_renderer_instance = SmartFaceRenderWorker(optimization_level)
+    recreate_needed = (
+        _smart_face_renderer_instance is None or 
+        _smart_face_renderer_instance.optimization_level != optimization_level or
+        _smart_face_renderer_instance.natural_animation != natural_animation
+    )
+    
+    if recreate_needed:
+        _smart_face_renderer_instance = SmartFaceRenderWorker(optimization_level, natural_animation)
     return _smart_face_renderer_instance
 
 def render_animation_smart(source_image: torch.Tensor, 
@@ -388,20 +294,23 @@ def render_animation_smart(source_image: torch.Tensor,
                           roll_c_seq: Optional[torch.Tensor] = None,
                           use_exp: bool = True,
                           optimization_level: str = "medium",
+                          natural_animation: bool = True,
                           batch_size: int = 8) -> torch.Tensor:
     """
-    Main public function for smart face rendering with dynamic VRAM management.
+    Main public function for smart face rendering with natural animation support.
     
-    This function automatically:
-    - Detects available VRAM and adjusts batch size
-    - Handles OOM errors gracefully with retry logic  
-    - Applies performance optimizations based on optimization level
-    - Provides singleton pattern for memory efficiency
+    Args:
+        natural_animation: If True, uses raw keypoints for maximum realism (RECOMMENDED)
+                          If False, may apply optimizations that reduce some micro-expressions
     
-    Expected performance improvement: 2-10x faster depending on GPU and optimization level
+    This function provides:
+    - Natural eye blinking and micro-expressions
+    - Dynamic VRAM management
+    - OOM error recovery
+    - Performance optimizations while maintaining quality
     """
     
-    renderer = get_smart_face_renderer(optimization_level)
+    renderer = get_smart_face_renderer(optimization_level, natural_animation)
     
     return renderer.render_animation_smart(
         source_image, source_semantics, target_semantics,

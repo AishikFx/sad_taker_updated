@@ -205,16 +205,19 @@ class AnimateFromCoeff():
 
         frame_num = x['frame_num']
 
-        # Use smart face renderer with dynamic VRAM detection and batch optimization
-        print(f"🚀 Using Smart Face Renderer with dynamic VRAM detection (optimization: {optimization_level})")
+        # Use smart face renderer with natural animation for maximum realism  
+        print(f"🚀 Using Smart Face Renderer with Natural Animation")
+        print(f"   ⚡ Optimization: {optimization_level}")
+        print(f"   🎭 Animation: natural (preserves eye blinks and micro-expressions)")
         
-        # The smart renderer automatically detects optimal batch size based on available VRAM
+        # The smart renderer with natural animation preserves all subtle movements
         predictions_video = render_animation_smart(
             source_image, source_semantics, target_semantics,
             self.generator, self.kp_extractor, self.he_estimator, self.mapping,
             yaw_c_seq, pitch_c_seq, roll_c_seq, 
             use_exp=True, 
             optimization_level=optimization_level,
+            natural_animation=True,  # Enable natural animation for eye blinks, etc.
             batch_size=batch_size
         )
 

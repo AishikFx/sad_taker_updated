@@ -1,6 +1,6 @@
 """
-Smart Face Renderer with Natural Animation Support
-This version focuses on natural animation quality while maintaining performance optimizations.
+Smart Face Renderer with High-Quality Natural Animation
+Focused on preserving animation quality and natural expressions
 """
 
 import os
@@ -15,13 +15,13 @@ from tqdm import tqdm
 # Import the basic animation functions we need
 from src.facerender.modules.make_animation import get_rotation_matrix, keypoint_transformation
 
-# --- Layer 1: Memory Manager for Face Renderer ---
+# --- Layer 1: Quality-Focused Memory Manager for Face Renderer ---
 
-class FaceRenderMemoryManager:
-    """Memory manager specifically optimized for face rendering operations."""
+class QualityFaceRenderMemoryManager:
+    """Quality-focused memory manager for face rendering with stable performance."""
     
-    def __init__(self, safety_margin=0.75):
-        self.safety_margin = safety_margin  # Use 75% of available VRAM for face rendering
+    def __init__(self, safety_margin=0.75):  # Conservative safety margin for stability
+        self.safety_margin = safety_margin  
         self.oom_count = 0
         self.successful_batch_sizes = []
         self.failed_batch_sizes = []
@@ -41,11 +41,13 @@ class FaceRenderMemoryManager:
         }
 
     def estimate_face_render_memory_per_frame(self, img_size: int = 256) -> float:
-        """Estimate memory usage per frame for face rendering."""
-        base_memory_gb = 0.5  # Generator forward pass
-        resolution_factor = (img_size / 256) ** 2
+        """Conservative memory estimation for stable face rendering."""
+        # Conservative memory estimation for stability
+        base_memory_gb = 0.5  # Conservative base estimate
+        resolution_factor = (img_size / 256) ** 2  # Linear scaling for safety
         memory_per_frame = base_memory_gb * resolution_factor
-        overhead_factor = 1.3
+        overhead_factor = 1.3  # Conservative overhead
+        return memory_per_frame * overhead_factor
         return memory_per_frame * overhead_factor
 
     def get_safe_batch_size(self, requested_size: int, img_size: int = 256) -> int:
@@ -105,11 +107,11 @@ class SmartFaceRenderWorker:
     def __init__(self, optimization_level: str = "medium", natural_animation: bool = True):
         self.optimization_level = optimization_level
         self.natural_animation = natural_animation
-        self.memory_manager = FaceRenderMemoryManager()
+        self.memory_manager = QualityFaceRenderMemoryManager()
         
-        # Performance settings
-        self.use_mixed_precision = optimization_level in ["high", "extreme"]
-        self.aggressive_batching = optimization_level == "extreme"
+        # Quality-focused settings
+        self.use_mixed_precision = False  # Disable for quality
+        self.aggressive_batching = False  # Disable for stability
         
         # Performance tracking
         self.total_frames_processed = 0

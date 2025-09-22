@@ -27,7 +27,7 @@ from src.utils.face_enhancer import enhance_images
 from src.utils.videoio import load_video_to_cv2
 from src.utils.paste_pic import paste_pic
 # Import optimized paste functions  
-from src.utils.paste_pic import fast_paste_pic, OptimizedPastePic
+from src.utils.paste_pic import  OptimizedPastePic
 from src.utils.videoio import save_video_with_watermark
 # Import smart face renderer
 from src.utils.smart_face_renderer import render_animation_smart

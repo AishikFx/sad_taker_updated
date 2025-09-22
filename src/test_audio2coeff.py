@@ -63,7 +63,7 @@ class Audio2Coeff():
                 load_cpk(sadtalker_path['audio2exp_checkpoint'], model=netG, device=device)
         except:
             raise Exception("Failed in loading audio2exp_checkpoint")
-        self.audio2exp_model = Audio2Exp(netG, cfg_exp, device=device, prepare_training_loss=False)
+        self.audio2exp_model = Audio2Exp(netG, cfg_exp, device=device)
         self.audio2exp_model = self.audio2exp_model.to(device)
         for param in self.audio2exp_model.parameters():
             param.requires_grad = False

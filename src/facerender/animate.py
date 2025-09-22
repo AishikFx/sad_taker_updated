@@ -22,7 +22,7 @@ from src.utils.fast_seamless_clone import fast_seamless_clone, process_video_fra
 
 from pydub import AudioSegment 
 # Import optimized face enhancer functions
-from src.utils.face_enhancer import fast_enhancer_generator_with_len, fast_enhancer_list, create_optimized_enhancer, HighVRAMFaceEnhancer
+from src.utils.face_enhancer import enhance_images
 from src.utils.videoio import load_video_to_cv2
 from src.utils.paste_pic import paste_pic
 # Import optimized paste functions  
@@ -287,59 +287,18 @@ class AnimateFromCoeff():
             av_path_enhancer = os.path.join(video_save_dir, video_name_enhancer) 
             return_path = av_path_enhancer
 
-            # Use optimized face enhancer based on optimization level  
-            # Determine optimal batch size based on VRAM and optimization level
-            if torch.cuda.is_available():
-                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-                if gpu_memory_gb >= 14:  # High VRAM systems
-                    batch_size = 32 if optimization_level == "extreme" else 24
-                elif gpu_memory_gb >= 10:
-                    batch_size = 24 if optimization_level == "extreme" else 16
-                elif gpu_memory_gb >= 8:
-                    batch_size = 16 if optimization_level == "extreme" else 12
-                else:
-                    batch_size = 8 if optimization_level == "extreme" else 4
-            else:
-                batch_size = 4
+            # Use new optimized face enhancer with automatic batch sizing
+            print(f"🚀 Using optimized face enhancer with auto-scaling batch size")
             
-            print(f"Using optimized face enhancer (optimization: {optimization_level}, batch_size: {batch_size})")
+            # Load video frames
+            video_frames = load_video_to_cv2(full_video_path)
             
-            # Use high-VRAM optimizer for systems with sufficient memory
-            if torch.cuda.is_available() and gpu_memory_gb >= 12:
-                print("🚀 Using HIGH VRAM face enhancer for maximum GPU utilization")
-                try:
-                    high_vram_enhancer = HighVRAMFaceEnhancer(method=enhancer)
-                    video_frames = load_video_to_cv2(full_video_path)
-                    enhanced_frames = high_vram_enhancer.enhance_batch_ultra(video_frames, batch_size=batch_size)
-                    imageio.mimsave(enhanced_path, enhanced_frames, fps=float(25))
-                except Exception as e:
-                    print(f"High VRAM enhancer failed ({e}), falling back to standard enhancer")
-                    enhanced_images_gen_with_len = fast_enhancer_generator_with_len(
-                        full_video_path, method=enhancer, bg_upsampler=background_enhancer,
-                        optimization_level=optimization_level, batch_size=batch_size)
-                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
-            elif optimization_level in ["high", "extreme"]:
-                try:
-                    enhanced_images_gen_with_len = fast_enhancer_generator_with_len(
-                        full_video_path, method=enhancer, bg_upsampler=background_enhancer,
-                        optimization_level=optimization_level, batch_size=batch_size)
-                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
-                except Exception as e:
-                    print(f"Fast enhancer failed ({e}), falling back to original enhancer")
-                    try:
-                        enhanced_images_gen_with_len = fast_enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
-                        imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
-                    except:
-                        enhanced_images_gen_with_len = fast_enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
-                        imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
-                        imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
-            else:
-                try:
-                    enhanced_images_gen_with_len = fast_enhancer_generator_with_len(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
-                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
-                except:
-                    enhanced_images_gen_with_len = fast_enhancer_list(full_video_path, method=enhancer, bg_upsampler=background_enhancer)
-                    imageio.mimsave(enhanced_path, enhanced_images_gen_with_len, fps=float(25))
+            # Enhance frames using the new optimized enhancer
+            # The enhancer will automatically determine optimal batch size based on VRAM
+            enhanced_frames = enhance_images(video_frames, batch_size=batch_size if batch_size else 16)
+            
+            # Save enhanced video
+            imageio.mimsave(enhanced_path, enhanced_frames, fps=float(25))
             
             save_video_with_watermark(enhanced_path, new_audio_path, av_path_enhancer, watermark= False)
             print(f'The generated video is named {video_save_dir}/{video_name_enhancer}')

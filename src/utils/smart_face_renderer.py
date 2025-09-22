@@ -25,16 +25,25 @@ def compute_keypoint_area_torch(keypoints_value):
     Uses bounding box area as a fast approximation to ConvexHull volume.
     
     Args:
-        keypoints_value: tensor of shape [batch, num_points, 2]
+        keypoints_value: tensor of shape [batch, num_points, 2] or [batch, num_points, 3]
     Returns:
         area: tensor of shape [batch]
     """
+    # Handle both 2D and 3D keypoints - use first 2 dimensions for area
+    if keypoints_value.shape[-1] > 2:
+        keypoints_2d = keypoints_value[..., :2]  # Take x, y coordinates only
+    else:
+        keypoints_2d = keypoints_value
+    
     # Get min/max coordinates for bounding box
-    min_coords = torch.min(keypoints_value, dim=1)[0]  # [batch, 2]
-    max_coords = torch.max(keypoints_value, dim=1)[0]  # [batch, 2]
+    min_coords = torch.min(keypoints_2d, dim=1)[0]  # [batch, 2]
+    max_coords = torch.max(keypoints_2d, dim=1)[0]  # [batch, 2]
     
     # Compute bounding box area
     bbox_area = (max_coords - min_coords).prod(dim=1)  # [batch]
+    
+    # Add small epsilon to avoid zero areas
+    bbox_area = torch.clamp(bbox_area, min=1e-8)
     
     return bbox_area
 
@@ -124,13 +133,30 @@ class KeypointNormalizer:
         self.kp_driving_initial = kp_driving_initial
         self.precomputed_scale = None
         
+        # Debug keypoint shapes
+        if kp_source is not None:
+            print(f"🔍 KeypointNormalizer: source keypoints shape: {kp_source['value'].shape}")
+        if kp_driving_initial is not None:
+            print(f"🔍 KeypointNormalizer: driving_initial keypoints shape: {kp_driving_initial['value'].shape}")
+        
         # Precompute scale factor if possible
         if adapt_movement_scale and kp_source is not None and kp_driving_initial is not None:
-            source_area = compute_keypoint_area_torch(kp_source['value'])
-            driving_area = compute_keypoint_area_torch(kp_driving_initial['value'])
-            eps = 1e-8
-            self.precomputed_scale = torch.sqrt(source_area / (driving_area + eps))
-            print(f"🚀 Precomputed keypoint scale factor: {self.precomputed_scale.item():.4f}")
+            try:
+                source_area = compute_keypoint_area_torch(kp_source['value'])
+                driving_area = compute_keypoint_area_torch(kp_driving_initial['value'])
+                eps = 1e-8
+                self.precomputed_scale = torch.sqrt(source_area / (driving_area + eps))
+                
+                # Handle batch dimension for display - take first element or mean
+                if self.precomputed_scale.numel() > 1:
+                    display_scale = self.precomputed_scale.mean().item()
+                    print(f"🚀 Precomputed keypoint scale factor (batch avg): {display_scale:.4f}")
+                else:
+                    print(f"🚀 Precomputed keypoint scale factor: {self.precomputed_scale.item():.4f}")
+            except Exception as e:
+                print(f"⚠️ Warning: Failed to precompute scale factor: {e}")
+                print(f"   Falling back to dynamic scale computation")
+                self.precomputed_scale = None
     
     def normalize(self, kp_driving, use_relative_movement=False, use_relative_jacobian=False):
         """Fast normalize using precomputed values."""

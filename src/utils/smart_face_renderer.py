@@ -7,6 +7,7 @@ import os
 import time
 import gc
 from typing import Dict, Any, Optional, Tuple
+from contextlib import contextmanager
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -231,11 +232,19 @@ class SmartFaceRenderWorker:
         """
         
         with torch.no_grad():
-            # Enable mixed precision if configured
+            # Enable mixed precision if configured with PyTorch compatibility
             if self.use_mixed_precision and torch.cuda.is_available():
                 autocast = torch.cuda.amp.autocast
             else:
-                autocast = torch.nullcontext
+                # Fallback for older PyTorch versions
+                try:
+                    from contextlib import nullcontext
+                    autocast = nullcontext
+                except ImportError:
+                    # For very old Python versions - create a simple context manager
+                    @contextmanager
+                    def autocast():
+                        yield
             
             with autocast():
                 # Pre-compute source keypoints once (major optimization)

@@ -326,8 +326,9 @@ class SmartFaceRenderWorker:
                     if self.aggressive_batching and torch.cuda.is_available() and len(predictions) % 5 == 0:
                         torch.cuda.empty_cache()
                 
-                # Concatenate all predictions
-                predictions_ts = torch.cat(predictions, dim=1)
+                # Concatenate all predictions - use stack to maintain proper dimensions
+                predictions_ts = torch.stack(predictions, dim=1)
+                print(f"🔍 Smart renderer output shape: {predictions_ts.shape}")
         
         return predictions_ts
 

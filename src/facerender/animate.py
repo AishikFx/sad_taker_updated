@@ -218,15 +218,40 @@ class AnimateFromCoeff():
             batch_size=batch_size
         )
 
-        # Use the original, working tensor-to-numpy conversion
+        # Use the original, working tensor-to-numpy conversion with robust shape handling
+        print(f"🔍 Debug: predictions_video shape before processing: {predictions_video.shape}")
         predictions_video = predictions_video.reshape((-1,)+predictions_video.shape[2:])
         predictions_video = predictions_video[:frame_num]
 
         video = []
         for idx in range(predictions_video.shape[0]):
             image = predictions_video[idx]
-            image = np.transpose(image.data.cpu().numpy(), [1, 2, 0]).astype(np.float32)
+            
+            # Handle different tensor shapes robustly
+            if len(image.shape) == 3:
+                # Expected format: [C, H, W] -> [H, W, C]
+                image = np.transpose(image.data.cpu().numpy(), [1, 2, 0]).astype(np.float32)
+            elif len(image.shape) == 4 and image.shape[0] == 1:
+                # Handle case where there's an extra batch dimension: [1, C, H, W] -> [H, W, C]
+                image = image.squeeze(0)  # Remove batch dimension: [C, H, W]
+                image = np.transpose(image.data.cpu().numpy(), [1, 2, 0]).astype(np.float32)
+            else:
+                # Fallback: try to detect the right format
+                print(f"⚠️ Warning: Unexpected image shape {image.shape}, attempting auto-detection")
+                image_np = image.data.cpu().numpy()
+                if len(image_np.shape) == 3:
+                    # Assume channels are in the smallest dimension
+                    if image_np.shape[0] <= 4:  # Channels likely first: [C, H, W]
+                        image = np.transpose(image_np, [1, 2, 0]).astype(np.float32)
+                    elif image_np.shape[2] <= 4:  # Channels likely last: [H, W, C]
+                        image = image_np.astype(np.float32)
+                    else:  # Default to [C, H, W] -> [H, W, C]
+                        image = np.transpose(image_np, [1, 2, 0]).astype(np.float32)
+                else:
+                    raise ValueError(f"Cannot handle image shape: {image.shape}")
+            
             video.append(image)
+        print(f"✅ Successfully processed {len(video)} video frames")
         result = img_as_ubyte(video)
 
         ### the generated video is 256x256, so we keep the aspect ratio, 

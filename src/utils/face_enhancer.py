@@ -1,39 +1,3 @@
-# Comprehensive CUDA OOM Handling Strategy
-#
-# This system implements multi-layered CUDA Out-of-Memory protection:
-#
-# 1. PREVENTION LAYER:
-#    - AdaptiveMemoryManager: Learns from OOM history and adjusts batch sizes proactively
-#    - Memory pressure tracking: normal/high/critical levels based on consecutive OOMs
-#    - Proactive OOM prevention: Estimates memory needs before processing
-#
-# 2. RECOVERY LAYER:
-#    - Emergency memory cleanup: torch.cuda.empty_cache(), garbage collection
-#    - Progressive memory fraction reduction: 95% → 75% → 60% → 50%
-#    - Stream-specific cleanup: Clear memory in individual CUDA streams
-#    - Tensor pool cleanup: Free pre-allocated tensor pools when needed
-#
-# 3. FALLBACK LAYER:
-#    - Sequential processing: Fall back to single-image processing
-#    - Conservative batching: Reduce batch sizes progressively
-#    - Original image return: Return unmodified images if enhancement fails
-#
-# 4. MONITORING LAYER:
-#    - Real-time memory tracking: Current, peak, and utilization monitoring
-#    - OOM event counting: Track frequency and patterns
-#    - Performance suggestions: Provide optimization recommendations
-#
-# USAGE:
-# - System automatically handles OOM events and continues processing
-# - Batch sizes adapt based on GPU memory and OOM history
-# - Memory pressure levels adjust conservatism automatically
-# - All safety measures are transparent to the user
-#
-# For production deployments with varying GPU configurations:
-# - System scales from 4GB consumer GPUs to 1000GB+ data center GPUs
-# - No manual configuration needed - fully automatic adaptation
-# - Maintains high VRAM utilization while preventing crashes
-
 import os
 import torch 
 import cv2
@@ -41,11 +5,515 @@ import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 import threading
-from queue import Queue
+from queue import Queue, PriorityQueue
 import multiprocessing
+import asyncio
+import time
+from typing import List, Tuple, Optional, Callable
+from dataclasses import dataclass
 
 from gfpgan import GFPGANer
 from src.utils.videoio import load_video_to_cv2
+
+
+# Safety wrapper: avoid permanently capping per-process memory fraction during OOM recovery.
+def _safe_set_per_process_memory_fraction(frac):
+    """Attempt to set per-process memory fraction, but avoid permanently capping memory.
+
+    Rather than forcing a persistent low fraction (which can leave the process crippled),
+    this helper performs an aggressive cache cleanup and logs the requested change.
+    """
+    try:
+        if not torch.cuda.is_available():
+            return
+        # Log instead of setting a permanent cap to avoid locking the process to a smaller fraction
+        print(f"⚠️  Requested per-process memory fraction {frac}; skipping permanent set to avoid capping process memory. Performing empty_cache() instead.")
+        torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"⚠️  Failed to run safe memory fraction handler: {e}")
+
+
+@dataclass
+class ImageTask:
+    """Represents an image processing task with priority"""
+    id: int
+    image: np.ndarray
+    priority: int = 0
+    timestamp: float = 0.0
+    estimated_memory_mb: float = 0.0
+    
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if self.estimated_memory_mb == 0.0:
+            # Estimate memory usage: H * W * C * 4 bytes (float32) * overhead
+            h, w, c = self.image.shape
+            self.estimated_memory_mb = (h * w * c * 4 * 2.5) / (1024 * 1024)  # 2.5x overhead
+    
+    def __lt__(self, other):
+        # Higher priority first, then older tasks first
+        return (self.priority, -self.timestamp) < (other.priority, -other.timestamp)
+
+
+class DynamicMemoryMonitor:
+    """Real-time CUDA memory monitor with async capabilities"""
+    
+    def __init__(self, check_interval=0.1, memory_threshold_mb=512):
+        self.check_interval = check_interval
+        self.memory_threshold_mb = memory_threshold_mb
+        self.is_monitoring = False
+        self.callbacks = []
+        self._monitor_thread = None
+        self._lock = threading.Lock()
+        
+    def add_memory_callback(self, callback: Callable[[float, float], None]):
+        """Add callback for memory changes: callback(available_mb, total_mb)"""
+        with self._lock:
+            self.callbacks.append(callback)
+    
+    def get_memory_info(self) -> Tuple[float, float, float]:
+        """Returns (available_mb, allocated_mb, total_mb)"""
+        if not torch.cuda.is_available():
+            return 0.0, 0.0, 0.0
+        
+        allocated = torch.cuda.memory_allocated() / (1024 * 1024)
+        total = torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
+        available = total - allocated
+        return available, allocated, total
+    
+    def start_monitoring(self):
+        """Start background memory monitoring"""
+        if self.is_monitoring:
+            return
+        
+        self.is_monitoring = True
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._monitor_thread.start()
+    
+    def stop_monitoring(self):
+        """Stop background memory monitoring"""
+        self.is_monitoring = False
+        if self._monitor_thread:
+            self._monitor_thread.join(timeout=1.0)
+    
+    def _monitor_loop(self):
+        """Background monitoring loop"""
+        while self.is_monitoring:
+            try:
+                available, allocated, total = self.get_memory_info()
+                
+                # Notify callbacks of memory changes
+                with self._lock:
+                    for callback in self.callbacks:
+                        try:
+                            callback(available, total)
+                        except Exception as e:
+                            print(f"Memory callback error: {e}")
+                
+                time.sleep(self.check_interval)
+            except Exception as e:
+                print(f"Memory monitoring error: {e}")
+                time.sleep(self.check_interval)
+
+
+class AsyncImageQueue:
+    """Async-aware image processing queue with dynamic batch sizing"""
+    
+    def __init__(self, memory_monitor: DynamicMemoryMonitor):
+        self.memory_monitor = memory_monitor
+        self.task_queue = PriorityQueue()
+        self.processing_queue = Queue()
+        self.completed_tasks = {}
+        self.failed_tasks = {}
+        self._task_counter = 0
+        self._lock = threading.Lock()
+        self._processing_event = threading.Event()
+        
+        # Dynamic batch sizing
+        self.min_batch_size = 1
+        self.max_batch_size = 8
+        self.current_batch_size = 2
+        self.memory_safety_factor = 0.7  # Use 70% of available memory
+        
+        # Statistics
+        self.total_processed = 0
+        self.total_failed = 0
+        self.avg_processing_time = 0.0
+        
+    def add_image(self, image: np.ndarray, priority: int = 0) -> int:
+        """Add image to processing queue, returns task ID"""
+        with self._lock:
+            task_id = self._task_counter
+            self._task_counter += 1
+        
+        task = ImageTask(id=task_id, image=image, priority=priority)
+        self.task_queue.put(task)
+        self._processing_event.set()  # Signal that work is available
+        
+        return task_id
+    
+    def get_optimal_batch_size(self) -> int:
+        """Calculate optimal batch size based on current memory availability"""
+        available_mb, _, total_mb = self.memory_monitor.get_memory_info()
+        
+        if available_mb < 100:  # Very low memory
+            return 1
+        
+        # Estimate how many images we can process
+        # Assume average image needs ~200MB for processing
+        avg_memory_per_image = 200
+        safe_available = available_mb * self.memory_safety_factor
+        theoretical_batch = max(1, int(safe_available / avg_memory_per_image))
+        
+        # Clamp to our min/max bounds
+        optimal_batch = max(self.min_batch_size, 
+                          min(self.max_batch_size, theoretical_batch))
+        
+        # Adjust based on recent performance
+        if hasattr(self, '_recent_oom') and self._recent_oom:
+            optimal_batch = max(1, optimal_batch // 2)
+        
+        return optimal_batch
+    
+    def get_next_batch(self, timeout: float = 1.0) -> List[ImageTask]:
+        """Get next batch of images to process, dynamically sized"""
+        batch = []
+        optimal_size = self.get_optimal_batch_size()
+        
+        # Wait for at least one task
+        if self.task_queue.empty():
+            self._processing_event.wait(timeout)
+            self._processing_event.clear()
+        
+        # Collect tasks up to optimal batch size
+        total_estimated_memory = 0.0
+        available_mb, _, _ = self.memory_monitor.get_memory_info()
+        memory_budget = available_mb * self.memory_safety_factor
+        
+        for _ in range(optimal_size):
+            try:
+                # Try to get a task without blocking too long
+                task = self.task_queue.get_nowait()
+                
+                # Check if adding this task would exceed memory budget
+                if total_estimated_memory + task.estimated_memory_mb > memory_budget:
+                    # Put the task back and stop collecting
+                    self.task_queue.put(task)
+                    break
+                
+                batch.append(task)
+                total_estimated_memory += task.estimated_memory_mb
+                
+            except:
+                # Queue is empty
+                break
+        
+        return batch
+    
+    def mark_completed(self, task_ids: List[int], results: List[np.ndarray]):
+        """Mark tasks as completed with results"""
+        with self._lock:
+            for task_id, result in zip(task_ids, results):
+                self.completed_tasks[task_id] = result
+                self.total_processed += 1
+    
+    def mark_failed(self, task_ids: List[int], error: str):
+        """Mark tasks as failed"""
+        with self._lock:
+            for task_id in task_ids:
+                self.failed_tasks[task_id] = error
+                self.total_failed += 1
+                
+        # Reduce batch size after failures
+        self.current_batch_size = max(1, self.current_batch_size - 1)
+        self._recent_oom = True
+    
+    def get_result(self, task_id: int, timeout: float = 30.0) -> Optional[np.ndarray]:
+        """Get result for a specific task ID"""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            with self._lock:
+                if task_id in self.completed_tasks:
+                    return self.completed_tasks.pop(task_id)
+                elif task_id in self.failed_tasks:
+                    error = self.failed_tasks.pop(task_id)
+                    raise RuntimeError(f"Task {task_id} failed: {error}")
+            
+            time.sleep(0.1)  # Check every 100ms
+        
+        raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
+    
+    def get_statistics(self) -> dict:
+        """Get processing statistics"""
+        with self._lock:
+            return {
+                'total_processed': self.total_processed,
+                'total_failed': self.total_failed,
+                'queue_size': self.task_queue.qsize(),
+                'current_batch_size': self.current_batch_size,
+                'avg_processing_time': self.avg_processing_time
+            }
+
+
+class DynamicAsyncEnhancer:
+    """Advanced face enhancer with dynamic memory management and async processing"""
+    
+    def __init__(self, method='gfpgan', max_workers=2):
+        self.method = method
+        self.max_workers = max_workers
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Initialize components
+        self.memory_monitor = DynamicMemoryMonitor()
+        self.image_queue = AsyncImageQueue(self.memory_monitor)
+        self.gfpgan_model = None
+        
+        # Worker management
+        self.workers = []
+        self.is_processing = False
+        self._shutdown_event = threading.Event()
+        
+        # Performance tracking
+        self.processing_stats = {
+            'total_images': 0,
+            'successful_batches': 0,
+            'failed_batches': 0,
+            'avg_batch_time': 0.0,
+            'memory_usage_history': []
+        }
+        
+        self._initialize_gfpgan()
+        self._start_workers()
+    
+    def _initialize_gfpgan(self):
+        """Initialize GFPGAN model"""
+        try:
+            print("🚀 Initializing Dynamic Async GFPGAN Enhancer...")
+            
+            if self.method == 'gfpgan':
+                model_path = 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth'
+                self.gfpgan_model = GFPGANer(
+                    model_path=model_path,
+                    upscale=2,
+                    arch='clean',
+                    channel_multiplier=2,
+                    bg_upsampler=None
+                )
+                print("✅ GFPGAN model initialized successfully")
+            else:
+                raise ValueError(f"Unsupported method: {self.method}")
+                
+        except Exception as e:
+            print(f"❌ Failed to initialize GFPGAN: {e}")
+            self.gfpgan_model = None
+    
+    def _start_workers(self):
+        """Start background worker threads"""
+        if not self.is_processing:
+            self.is_processing = True
+            self.memory_monitor.start_monitoring()
+            
+            # Start worker threads
+            for i in range(self.max_workers):
+                worker = threading.Thread(
+                    target=self._worker_loop, 
+                    args=(i,), 
+                    daemon=True,
+                    name=f"AsyncEnhancer-Worker-{i}"
+                )
+                worker.start()
+                self.workers.append(worker)
+            
+            print(f"🔄 Started {self.max_workers} async enhancement workers")
+    
+    def _worker_loop(self, worker_id: int):
+        """Main worker loop for processing image batches"""
+        print(f"👷 Worker {worker_id} started")
+        
+        while self.is_processing and not self._shutdown_event.is_set():
+            try:
+                # Get next batch of images
+                batch = self.image_queue.get_next_batch(timeout=1.0)
+                
+                if not batch:
+                    continue  # No work available
+                
+                # Check memory before processing
+                available_mb, _, total_mb = self.memory_monitor.get_memory_info()
+                
+                if available_mb < 200:  # Less than 200MB available
+                    print(f"⚠️  Worker {worker_id}: Low memory ({available_mb:.0f}MB), waiting...")
+                    time.sleep(0.5)
+                    # Put tasks back in queue
+                    for task in batch:
+                        self.image_queue.task_queue.put(task)
+                    continue
+                
+                # Process the batch
+                batch_start_time = time.time()
+                try:
+                    results = self._process_batch_safe(batch, worker_id)
+                    task_ids = [task.id for task in batch]
+                    self.image_queue.mark_completed(task_ids, results)
+                    
+                    # Update stats
+                    batch_time = time.time() - batch_start_time
+                    self.processing_stats['successful_batches'] += 1
+                    self.processing_stats['total_images'] += len(batch)
+                    self._update_avg_batch_time(batch_time)
+                    
+                    print(f"✅ Worker {worker_id}: Processed batch of {len(batch)} images in {batch_time:.2f}s")
+                    
+                except Exception as e:
+                    print(f"❌ Worker {worker_id}: Batch processing failed: {e}")
+                    task_ids = [task.id for task in batch]
+                    self.image_queue.mark_failed(task_ids, str(e))
+                    self.processing_stats['failed_batches'] += 1
+                    
+                    # Clear cache on failure
+                    torch.cuda.empty_cache()
+                    time.sleep(0.5)  # Brief pause before retrying
+                
+            except Exception as e:
+                print(f"❌ Worker {worker_id}: Unexpected error: {e}")
+                time.sleep(1.0)
+        
+        print(f"👷 Worker {worker_id} stopped")
+    
+    def _process_batch_safe(self, batch: List[ImageTask], worker_id: int) -> List[np.ndarray]:
+        """Safely process a batch of images with memory monitoring"""
+        if not self.gfpgan_model:
+            # Fallback to lightweight processing
+            return [self._lightweight_enhance(task.image) for task in batch]
+        
+        results = []
+        
+        for task in batch:
+            try:
+                # Check memory before each image
+                available_mb, _, _ = self.memory_monitor.get_memory_info()
+                
+                if available_mb < 100:  # Very low memory
+                    print(f"⚠️  Worker {worker_id}: Critical memory, using lightweight mode")
+                    result = self._lightweight_enhance(task.image)
+                else:
+                    # Process with GFPGAN
+                    img_bgr = cv2.cvtColor(task.image, cv2.COLOR_RGB2BGR)
+                    _, _, enhanced_bgr = self.gfpgan_model.enhance(
+                        img_bgr, 
+                        has_aligned=False, 
+                        only_center_face=False, 
+                        paste_back=True
+                    )
+                    result = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+                
+                results.append(result)
+                
+                # Clear cache periodically
+                if len(results) % 2 == 0:
+                    torch.cuda.empty_cache()
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"⚠️  Worker {worker_id}: OOM during processing, using original image")
+                    results.append(task.image)  # Use original on OOM
+                    torch.cuda.empty_cache()
+                else:
+                    raise e
+            except Exception as e:
+                print(f"⚠️  Worker {worker_id}: Enhancement failed for image {task.id}: {e}")
+                results.append(task.image)  # Use original on error
+        
+        return results
+    
+    def _lightweight_enhance(self, image: np.ndarray) -> np.ndarray:
+        """Lightweight CPU-based enhancement fallback"""
+        try:
+            # Simple sharpening and contrast enhancement
+            img_float = image.astype(np.float32) / 255.0
+            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+            sharpened = cv2.filter2D(img_float, -1, kernel)
+            sharpened = np.clip(sharpened, 0, 1)
+            enhanced = cv2.convertScaleAbs(sharpened * 255, alpha=1.1, beta=5)
+            return cv2.bilateralFilter(enhanced, 5, 75, 75)
+        except:
+            return image  # Return original if even lightweight processing fails
+    
+    def _update_avg_batch_time(self, batch_time: float):
+        """Update average batch processing time"""
+        current_avg = self.processing_stats['avg_batch_time']
+        batch_count = self.processing_stats['successful_batches']
+        
+        if batch_count == 1:
+            self.processing_stats['avg_batch_time'] = batch_time
+        else:
+            # Exponential moving average
+            alpha = 0.2
+            self.processing_stats['avg_batch_time'] = alpha * batch_time + (1 - alpha) * current_avg
+    
+    def enhance_images_async(self, images: List[np.ndarray], priority: int = 0) -> List[int]:
+        """Queue images for async processing, returns task IDs"""
+        if not self.is_processing:
+            self._start_workers()
+        
+        task_ids = []
+        for image in images:
+            task_id = self.image_queue.add_image(image, priority)
+            task_ids.append(task_id)
+        
+        return task_ids
+    
+    def get_results(self, task_ids: List[int], timeout: float = 30.0) -> List[np.ndarray]:
+        """Get results for multiple task IDs"""
+        results = []
+        for task_id in task_ids:
+            result = self.image_queue.get_result(task_id, timeout)
+            results.append(result)
+        return results
+    
+    def enhance_batch_sync(self, images: List[np.ndarray], timeout: float = 60.0) -> List[np.ndarray]:
+        """Synchronous batch processing using async backend"""
+        task_ids = self.enhance_images_async(images, priority=10)  # High priority for sync calls
+        return self.get_results(task_ids, timeout)
+    
+    def get_statistics(self) -> dict:
+        """Get comprehensive processing statistics"""
+        queue_stats = self.image_queue.get_statistics()
+        memory_info = self.memory_monitor.get_memory_info()
+        
+        return {
+            **self.processing_stats,
+            **queue_stats,
+            'available_memory_mb': memory_info[0],
+            'allocated_memory_mb': memory_info[1],
+            'total_memory_mb': memory_info[2],
+            'is_processing': self.is_processing,
+            'active_workers': len(self.workers)
+        }
+    
+    def shutdown(self):
+        """Gracefully shutdown the enhancer"""
+        print("🔄 Shutting down Dynamic Async Enhancer...")
+        self.is_processing = False
+        self._shutdown_event.set()
+        
+        # Stop monitoring
+        self.memory_monitor.stop_monitoring()
+        
+        # Wait for workers to finish
+        for worker in self.workers:
+            worker.join(timeout=2.0)
+        
+        print("✅ Dynamic Async Enhancer shutdown complete")
+    
+    def __del__(self):
+        """Cleanup on destruction"""
+        try:
+            if hasattr(self, 'is_processing') and self.is_processing:
+                self.shutdown()
+        except:
+            pass
 
 
 class FastGeneratorWithLen(object):
@@ -555,18 +1023,22 @@ class TrueBatchGFPGANEnhancer:
                     torch.cuda.empty_cache()
 
                     # Reduce memory fraction progressively
-                    current_fraction = torch.cuda.get_device_properties(0).total_memory * 0.01  # Get current fraction
-                    new_fraction = min(current_fraction, 0.6)  # Cap at 60%
-                    torch.cuda.set_per_process_memory_fraction(new_fraction)
-                    print(f"   Reduced memory fraction to {new_fraction:.1f}")
+                    # Avoid permanently changing per-process memory fraction; do safe cleanup instead
+                    try:
+                        _safe_set_per_process_memory_fraction(0.6)
+                    except Exception:
+                        pass
 
                     free_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1e9
                     print(f"   Available VRAM after aggressive cleanup: {free_memory_gb:.2f}GB")
 
                 elif free_memory_gb < 4.0:
                     print("   Step 5: Moderate cleanup (2-4GB free)")
-                    # Moderate cleanup
-                    torch.cuda.set_per_process_memory_fraction(0.75)
+                    # Moderate cleanup: do not set permanent memory fraction, perform safe cleanup instead
+                    try:
+                        _safe_set_per_process_memory_fraction(0.75)
+                    except Exception:
+                        pass
                     free_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1e9
                     print(f"   Available VRAM after moderate cleanup: {free_memory_gb:.2f}GB")
 
@@ -601,8 +1073,11 @@ class TrueBatchGFPGANEnhancer:
             if hasattr(torch.cuda, 'reset_peak_memory_stats'):
                 torch.cuda.reset_peak_memory_stats()
 
-            # Set memory fraction to minimum safe level
-            torch.cuda.set_per_process_memory_fraction(0.5)  # 50% of GPU memory
+            # Avoid permanently setting a lower per-process memory fraction; perform safe cleanup instead
+            try:
+                _safe_set_per_process_memory_fraction(0.5)
+            except Exception:
+                pass
 
             # Force garbage collection multiple times
             import gc
@@ -636,9 +1111,11 @@ class TrueBatchGFPGANEnhancer:
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
-            # Reset memory fraction to minimum
-            torch.cuda.set_per_process_memory_fraction(0.3)  # 30% of GPU memory
-            self.memory_fraction = 0.3
+            # Avoid permanently capping memory; perform safe cleanup instead
+            try:
+                _safe_set_per_process_memory_fraction(0.3)
+            except Exception:
+                pass
 
             # Clear all tensor pools completely
             self.tensor_pools = {}
@@ -1305,19 +1782,20 @@ class TrueBatchGFPGANEnhancer:
 
 class HighVRAMFaceEnhancer:
     """Ultra-optimized face enhancer for high VRAM systems (12GB+)"""
-    
-    def __init__(self, method='gfpgan'):
-        self.method = method
-        self.restorer = None
-        self._initialize_gfpgan()
-    
     def __init__(self, method='gfpgan'):
         self.method = method
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
+
         # Use the new true batch processor for maximum VRAM utilization
-        self.true_batch_enhancer = TrueBatchGFPGANEnhancer(method=method)
-        
+        try:
+            self.true_batch_enhancer = TrueBatchGFPGANEnhancer(method=method)
+        except Exception as e:
+            print(f"Warning: TrueBatchGFPGANEnhancer initialization failed: {e}")
+            self.true_batch_enhancer = None
+
+        # Mirror inner model attribute for easy checks
+        self.gfpgan_model = getattr(self.true_batch_enhancer, 'gfpgan_model', None)
+
         # Also keep fallback enhancer
         self.fallback_enhancer = None
         self._initialize_fallback_gfpgan()
@@ -1815,110 +2293,11 @@ def fast_enhancer_list(images, method='gfpgan', bg_upsampler='realesrgan',
 
 
 # Memory-optimized streaming enhancer
-class StreamingEnhancer:
-    """Memory-efficient streaming face enhancer"""
-    
-    def __init__(self, method='gfpgan', optimization_level="medium", max_memory_mb=1024):
-        self.enhancer = OptimizedFaceEnhancer(method=method, optimization_level=optimization_level)
-        self.max_memory_mb = max_memory_mb
-        self.frame_buffer = Queue(maxsize=32)  # Buffer for frames
-    
-    def enhance_stream(self, video_path, batch_size=4):
-        """Stream-process video frames to minimize memory usage"""
-        
-        def frame_producer():
-            """Producer thread to load frames"""
-            cap = cv2.VideoCapture(video_path)
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                self.frame_buffer.put(frame_rgb)
-            cap.release()
-            self.frame_buffer.put(None)  # Signal end
-        
-        def frame_consumer():
-            """Consumer thread to enhance frames"""
-            batch = []
-            while True:
-                frame = self.frame_buffer.get()
-                if frame is None:
-                    # Process remaining frames
-                    if batch:
-                        if self.enhancer.optimization_level == "extreme":
-                            enhanced_batch = self.enhancer._lightweight_batch_enhance(batch, len(batch))
-                        else:
-                            enhanced_batch = self.enhancer._sequential_batch_enhance(batch, len(batch))
-                        for enhanced_frame in enhanced_batch:
-                            yield enhanced_frame
-                    break
-                
-                batch.append(frame)
-                if len(batch) >= batch_size:
-                    # Process batch
-                    if self.enhancer.optimization_level == "extreme":
-                        enhanced_batch = self.enhancer._lightweight_batch_enhance(batch, batch_size)
-                    else:
-                        enhanced_batch = self.enhancer._sequential_batch_enhance(batch, batch_size)
-                    
-                    for enhanced_frame in enhanced_batch:
-                        yield enhanced_frame
-                    batch = []
-        
-        # Start producer thread
-        import threading
-        producer_thread = threading.Thread(target=frame_producer)
-        producer_thread.daemon = True
-        producer_thread.start()
-        
-        # Return consumer generator
-        return frame_consumer()
+# StreamingEnhancer removed — it was unused in the codebase. Use OptimizedFaceEnhancer for streaming/batch workflows.
 
 
 # GPU memory management utilities
-class GPUMemoryManager:
-    """Manage GPU memory for optimal performance"""
-    
-    @staticmethod
-    def get_optimal_batch_size():
-        """Determine optimal batch size based on available GPU memory"""
-        if not torch.cuda.is_available():
-            return 1
-        
-        gpu_memory = torch.cuda.get_device_properties(0).total_memory
-        gpu_memory_gb = gpu_memory / 1e9
-        
-        if gpu_memory_gb >= 12:
-            return 8
-        elif gpu_memory_gb >= 8:
-            return 6
-        elif gpu_memory_gb >= 6:
-            return 4
-        elif gpu_memory_gb >= 4:
-            return 2
-        else:
-            return 1
-    
-    @staticmethod
-    def setup_memory_optimization():
-        """Setup memory optimizations"""
-        if torch.cuda.is_available():
-            # Enable memory optimization
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            
-            # Set memory fraction
-            if hasattr(torch.cuda, 'set_per_process_memory_fraction'):
-                torch.cuda.set_per_process_memory_fraction(0.8)
-    
-    @staticmethod
-    def cleanup_gpu_memory():
-        """Aggressive GPU memory cleanup"""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+# GPUMemoryManager removed — functionality consolidated into AdaptiveMemoryManager and helper functions.
 
 
 # Quality vs Speed presets
@@ -2037,3 +2416,97 @@ def benchmark_enhancement_methods(video_path, num_frames=50):
         print(f"{preset_name}: {processing_time:.2f}s, {fps:.2f} FPS")
     
     return results
+
+
+# Factory function for creating the optimal enhancer
+def create_dynamic_enhancer(method='gfpgan', enable_async=True, max_workers=2):
+    """Factory function to create the best enhancer for the current system
+    
+    Args:
+        method: Enhancement method ('gfpgan', etc.)
+        enable_async: Whether to use the new dynamic async enhancer
+        max_workers: Number of worker threads for async processing
+    
+    Returns:
+        Enhancer instance
+    """
+    if enable_async and torch.cuda.is_available():
+        gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        
+        # Use dynamic async enhancer for systems with sufficient memory
+        if gpu_memory_gb >= 6:  # 6GB minimum for async processing
+            print(f"🚀 Creating Dynamic Async Enhancer for {gpu_memory_gb:.1f}GB GPU")
+            return DynamicAsyncEnhancer(method=method, max_workers=max_workers)
+    
+    # Fallback to existing enhancers
+    print("📋 Using standard enhancer (async disabled or insufficient VRAM)")
+    return create_optimized_enhancer(method=method, optimization_level="medium")
+
+
+# Enhanced batch processing functions with dynamic support
+def dynamic_enhancer_batch(images, method='gfpgan', batch_size=None, enable_async=True, timeout=60.0):
+    """Process images using dynamic async enhancer with intelligent batching
+    
+    Args:
+        images: List of images to enhance
+        method: Enhancement method
+        batch_size: Ignored (dynamically determined)
+        enable_async: Whether to use async processing
+        timeout: Timeout for async processing
+    
+    Returns:
+        List of enhanced images
+    """
+    enhancer = create_dynamic_enhancer(method=method, enable_async=enable_async)
+    
+    try:
+        if isinstance(enhancer, DynamicAsyncEnhancer):
+            # Use async processing
+            print(f"🔄 Processing {len(images)} images with dynamic async enhancement")
+            return enhancer.enhance_batch_sync(images, timeout=timeout)
+        else:
+            # Use standard processing
+            return enhancer.enhance_batch(images, batch_size=batch_size or 4)
+    
+    finally:
+        # Cleanup async enhancer
+        if isinstance(enhancer, DynamicAsyncEnhancer):
+            enhancer.shutdown()
+
+
+# Async processing functions
+async def enhance_images_async_queue(images, method='gfpgan', priority=0):
+    """Async function to queue images for processing
+    
+    Args:
+        images: List of images to enhance
+        method: Enhancement method
+        priority: Processing priority (higher = processed first)
+    
+    Returns:
+        List of task IDs
+    """
+    enhancer = create_dynamic_enhancer(method=method, enable_async=True)
+    return enhancer.enhance_images_async(images, priority=priority)
+
+
+def get_dynamic_enhancer_stats():
+    """Get statistics from active dynamic enhancers"""
+    # This would need to be implemented with a global registry
+    # For now, return placeholder
+    return {
+        "message": "Dynamic enhancer statistics available per instance",
+        "available": torch.cuda.is_available(),
+        "memory_gb": torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
+    }
+
+
+# Backward compatibility wrapper
+def fast_enhancer_dynamic(images, method='gfpgan', optimization_level="auto", batch_size=None):
+    """Backward compatible function that automatically chooses between static and dynamic processing"""
+    if optimization_level == "auto":
+        # Automatically choose based on system capabilities
+        return dynamic_enhancer_batch(images, method=method, enable_async=True)
+    else:
+        # Use existing static enhancer
+        return fast_enhancer_list(images, method=method, optimization_level=optimization_level, batch_size=batch_size or 4)

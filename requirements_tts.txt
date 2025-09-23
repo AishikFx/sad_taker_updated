@@ -1,0 +1,7 @@
+# Additional requirements for TTS functionality
+gtts>=2.3.0
+pydub>=0.25.1
+fastapi>=0.68.0
+uvicorn>=0.15.0
+python-multipart>=0.0.5
+python-form-data>=0.0.4

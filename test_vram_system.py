@@ -74,7 +74,7 @@ def run_sadtalker_test():
         print(f"Exit code: {result.returncode}")
         
         if result.returncode == 0:
-            print("✅ TEST PASSED: SadTalker completed successfully!")
+            print(" TEST PASSED: SadTalker completed successfully!")
             
             # Check if output files exist
             output_files = []
@@ -86,7 +86,7 @@ def run_sadtalker_test():
                     print(f"   Output: {file} ({file_size:.1f} MB)")
             
             if output_files:
-                print(f"✅ Generated {len(output_files)} video file(s)")
+                print(f" Generated {len(output_files)} video file(s)")
             else:
                 print("⚠️  Warning: No output video files found")
             
@@ -175,8 +175,8 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("TEST SUMMARY")
     print("=" * 80)
-    print(f"Component Test: {'✅ PASSED' if component_test_passed else '❌ FAILED'}")
-    print(f"Integration Test: {'✅ PASSED' if integration_test_passed else '❌ FAILED'}")
+    print(f"Component Test: {' PASSED' if component_test_passed else '❌ FAILED'}")
+    print(f"Integration Test: {' PASSED' if integration_test_passed else '❌ FAILED'}")
     
     if component_test_passed and integration_test_passed:
         print("\n🎉 ALL TESTS PASSED! The new VRAM management system is working correctly.")

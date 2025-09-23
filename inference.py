@@ -13,6 +13,7 @@ from src.generate_facerender_batch import get_facerender_data
 from src.utils.init_path import init_path
 from src.utils.optimization_config import OptimizationConfig, PerformanceMonitor
 from src.utils.vram_queue_manager import get_global_processor, shutdown_global_processor
+from src.utils.tts_integration import SadTalkerTTS
 
 def main(args):
     # Initialize optimization configuration
@@ -24,6 +25,35 @@ def main(args):
     
     # Initialize performance monitor if profiling
     monitor = PerformanceMonitor() if getattr(args, 'profile', False) else None
+    
+    # Handle TTS input if text and gender are provided
+    audio_path = args.driven_audio
+    temp_audio_path = None
+    
+    if hasattr(args, 'input_text') and args.input_text:
+        print("🎤 Text-to-Speech mode detected")
+        
+        # Validate gender
+        gender = getattr(args, 'gender', 'female').lower()
+        if gender != 'female':
+            raise ValueError("❌ Only 'female' gender is currently supported for TTS")
+        
+        # Initialize TTS
+        print(f"🗣️ Generating speech for text (gender: {gender})...")
+        tts = SadTalkerTTS()
+        
+        try:
+            # Generate audio from text
+            temp_audio_path = tts.text_to_audio_for_sadtalker(args.input_text, gender)
+            audio_path = temp_audio_path
+            print(f"✅ Speech generated successfully: {audio_path}")
+            
+        except Exception as e:
+            print(f"❌ TTS generation failed: {e}")
+            raise RuntimeError(f"Failed to generate speech from text: {str(e)}")
+    
+    elif not args.driven_audio:
+        raise ValueError("❌ Either 'driven_audio' file or 'input_text' with 'gender' must be provided")
     
     # Initialize global VRAM processor for parallel enhancement
     print("Initializing parallel VRAM management system...")
@@ -309,7 +339,7 @@ def main(args):
     # The face renderer models hold 6-8GB of VRAM and MUST be completely removed
     # before face enhancement starts, otherwise OOM is guaranteed
     if torch.cuda.is_available():
-        print("🧹 COMPLETELY RELEASING FACE RENDERER FROM VRAM...")
+        print(" COMPLETELY RELEASING FACE RENDERER FROM VRAM...")
         
         # First, call the model's own cleanup method
         if hasattr(animate_from_coeff, 'release_face_renderer_models'):
@@ -379,19 +409,15 @@ def main(args):
     if monitor:
         monitor.print_summary()
     
-    return save_dir+'.mp4' if os.path.exists(save_dir+'.mp4') else result
-
-    if not args.verbose:
+    # Cleanup temporary TTS audio file if created
+    if temp_audio_path and os.path.exists(temp_audio_path):
         try:
-            shutil.rmtree(save_dir)
+            os.unlink(temp_audio_path)
+            print(f"🧹 Cleaned up temporary TTS audio file: {temp_audio_path}")
         except Exception as e:
-            print(f"Warning: Could not clean up temporary directory {save_dir}: {e}")
+            print(f"⚠️ Warning: Could not cleanup temporary TTS file: {e}")
 
-    # Final GPU memory cleanup
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        if profile:
-            print(f"[profile] GPU memory cleared. Final allocated: {torch.cuda.memory_allocated()/1024**3:.2f}GB")
+    return save_dir+'.mp4' if os.path.exists(save_dir+'.mp4') else result
 
     
 if __name__ == '__main__':
@@ -399,6 +425,11 @@ if __name__ == '__main__':
     parser = ArgumentParser()  
     parser.add_argument("--driven_audio", default='./examples/driven_audio/bus_chinese.wav', help="path to driven audio")
     parser.add_argument("--source_image", default='./examples/source_image/full_body_1.png', help="path to source image")
+    
+    # NEW TTS arguments
+    parser.add_argument("--input_text", default=None, help="input text for text-to-speech (alternative to driven_audio)")
+    parser.add_argument("--gender", default='female', choices=['female'], help="voice gender for TTS (only 'female' supported)")
+    
     parser.add_argument("--ref_eyeblink", default=None, help="path to reference video providing eye blinking")
     parser.add_argument("--ref_pose", default=None, help="path to reference video providing pose")
     parser.add_argument("--checkpoint_dir", default='./checkpoints', help="path to output")
@@ -447,6 +478,8 @@ if __name__ == '__main__':
     # DEBUG: Print parsed arguments
     print(f'DEBUG: Parsed args.source_image = {args.source_image}')
     print(f'DEBUG: Parsed args.driven_audio = {args.driven_audio}')
+    print(f'DEBUG: Parsed args.input_text = {getattr(args, "input_text", None)}')
+    print(f'DEBUG: Parsed args.gender = {getattr(args, "gender", None)}')
     print(f'DEBUG: Parsed args.optimization_preset = {args.optimization_preset}')
     
     # Handle preset listing

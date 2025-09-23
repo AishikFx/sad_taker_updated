@@ -16,7 +16,7 @@ import torchvision
 
 from src.facerender.modules.keypoint_detector import HEEstimator, KPDetector
 from src.facerender.modules.mapping import MappingNet
-from src.facerender.modules.generator import OcclusionAwareGenerator, OcclusionAwareSPADEGenerator
+from src.facerender.modules.generator import OcclusionAwareSPADEGenerator
 from src.facerender.modules.make_animation import make_animation
 # Import optimized versions
 from src.facerender.modules.make_animation_fast import make_animation_fast
@@ -127,7 +127,7 @@ class AnimateFromCoeff():
     
     def release_face_renderer_models(self):
         """Completely release all face renderer models from VRAM"""
-        print("🧹 Releasing face renderer models from VRAM...")
+        print(" Releasing face renderer models from VRAM...")
         
         if torch.cuda.is_available():
             allocated_before = torch.cuda.memory_allocated() / (1024**3)
@@ -138,25 +138,25 @@ class AnimateFromCoeff():
             self.generator.cpu()
             del self.generator
             self.generator = None
-            print("   ✅ Generator released")
+            print("    Generator released")
             
         if hasattr(self, 'kp_extractor') and self.kp_extractor is not None:
             self.kp_extractor.cpu()
             del self.kp_extractor
             self.kp_extractor = None
-            print("   ✅ Keypoint extractor released")
+            print("    Keypoint extractor released")
             
         if hasattr(self, 'he_estimator') and self.he_estimator is not None:
             self.he_estimator.cpu()
             del self.he_estimator
             self.he_estimator = None
-            print("   ✅ Head estimator released")
+            print("    Head estimator released")
             
         if hasattr(self, 'mapping') and self.mapping is not None:
             self.mapping.cpu()
             del self.mapping
             self.mapping = None
-            print("   ✅ Mapping network released")
+            print("    Mapping network released")
         
         # Force aggressive cleanup
         import gc
@@ -172,7 +172,7 @@ class AnimateFromCoeff():
             print(f"   After cleanup: {allocated_after:.1f}GB allocated")
             print(f"   🎉 FREED {freed:.1f}GB OF VRAM!")
         
-        print("✅ Face renderer models completely released from VRAM")
+        print(" Face renderer models completely released from VRAM")
     
     def load_cpk_facevid2vid_safetensor(self, checkpoint_path, generator=None, 
                         kp_detector=None, he_estimator=None,  
@@ -292,7 +292,7 @@ class AnimateFromCoeff():
             # This prevents OOM while providing basic functionality
             predictions_video = source_image.unsqueeze(1).repeat(1, frame_num, 1, 1, 1)
             
-            print(f"✅ Minimal mode rendering complete: {frame_num} frames generated")
+            print(f" Minimal mode rendering complete: {frame_num} frames generated")
             
         else:
             # Use smart face renderer with natural animation for maximum realism  
@@ -411,7 +411,7 @@ class AnimateFromCoeff():
             return_path = av_path_enhancer
 
             # !!! --- CRITICAL COMPLETE VRAM CLEANUP --- !!!
-            print("🧹 AGGRESSIVELY RELEASING ALL FACE RENDERER MODELS FROM VRAM...")
+            print(" AGGRESSIVELY RELEASING ALL FACE RENDERER MODELS FROM VRAM...")
             
             # Get VRAM status before cleanup
             if torch.cuda.is_available():
@@ -422,22 +422,22 @@ class AnimateFromCoeff():
             if hasattr(self, 'generator'):
                 self.generator.cpu()  # Move to CPU first
                 del self.generator
-                print("   ✅ Generator deleted")
+                print("    Generator deleted")
                 
             if hasattr(self, 'kp_extractor'):
                 self.kp_extractor.cpu()
                 del self.kp_extractor 
-                print("   ✅ Keypoint extractor deleted")
+                print("    Keypoint extractor deleted")
                 
             if hasattr(self, 'he_estimator'):
                 self.he_estimator.cpu()
                 del self.he_estimator
-                print("   ✅ Head estimator deleted")
+                print("    Head estimator deleted")
                 
             if hasattr(self, 'mapping'):
                 self.mapping.cpu()
                 del self.mapping
-                print("   ✅ Mapping network deleted")
+                print("    Mapping network deleted")
             
             # Force aggressive garbage collection
             import gc

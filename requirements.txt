@@ -19,3 +19,6 @@ gradio
 gfpgan
 av
 safetensors
+gtts==2.3.1
+# pydub already present in file, ensure a fixed version is used
+pydub==0.25.1

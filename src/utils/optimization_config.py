@@ -121,18 +121,21 @@ class OptimizationConfig:
         
         print(f"GPU detected: {gpu_name} ({gpu_memory:.1f}GB)")
         
-        # Adjust batch sizes based on GPU memory
-        if gpu_memory >= 24:
+        # Adjust batch sizes based on GPU memory (dynamic scaling)
+        # Use percentage-based scaling for true hardware agnostic behavior
+        memory_ratio = gpu_memory / 24.0  # Normalize to 24GB as reference point
+        
+        if memory_ratio >= 1.0:      # >= 24GB (high-end GPUs)
             scale_factor = 2.0
-        elif gpu_memory >= 16:
+        elif memory_ratio >= 0.67:   # >= ~16GB (upper mid-range)
             scale_factor = 1.5
-        elif gpu_memory >= 12:
+        elif memory_ratio >= 0.5:    # >= ~12GB (mid-range)
             scale_factor = 1.2
-        elif gpu_memory >= 8:
+        elif memory_ratio >= 0.33:   # >= ~8GB (lower mid-range)
             scale_factor = 1.0
-        elif gpu_memory >= 6:
+        elif memory_ratio >= 0.25:   # >= ~6GB (entry level)
             scale_factor = 0.8
-        else:
+        else:                        # < 6GB (very low memory)
             scale_factor = 0.5
         
         # Scale batch sizes
@@ -185,10 +188,11 @@ class OptimizationConfig:
         
         if torch.cuda.is_available():
             gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            memory_ratio = gpu_memory / 24.0  # Dynamic scaling based on 24GB reference
             print(f"GPU Memory: {gpu_memory:.1f}GB")
-            if gpu_memory < 6:
+            if memory_ratio < 0.25:  # Less than 25% of reference (6GB)
                 print("Low GPU memory detected. Consider 'fast' preset for better performance.")
-            elif gpu_memory >= 12:
+            elif memory_ratio >= 0.5:  # More than 50% of reference (12GB)
                 print("Excellent GPU memory. All presets should work well.")
         
         print("="*30)

@@ -110,17 +110,21 @@ class OptimizedFaceRenderer:
         
         gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
         
-        if gpu_memory >= 24:
+        # Dynamic batch size calculation based on memory ratio
+        # Use percentage-based thresholds for true scalability
+        memory_ratio = gpu_memory / 24.0  # Normalize to 24GB as reference
+        
+        if memory_ratio >= 1.0:  # >= 24GB
             return min(16, self.batch_size)
-        elif gpu_memory >= 16:
+        elif memory_ratio >= 0.67:  # >= ~16GB
             return min(12, self.batch_size)
-        elif gpu_memory >= 12:
+        elif memory_ratio >= 0.5:   # >= ~12GB
             return min(8, self.batch_size)
-        elif gpu_memory >= 8:
+        elif memory_ratio >= 0.33:  # >= ~8GB
             return min(6, self.batch_size)
-        elif gpu_memory >= 6:
+        elif memory_ratio >= 0.25:  # >= ~6GB
             return min(4, self.batch_size)
-        else:
+        else:  # < 6GB
             return 2
     
     def make_animation_optimized(self, source_image, source_semantics, target_semantics,

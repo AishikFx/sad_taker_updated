@@ -5,6 +5,9 @@ from time import  strftime
 import os, sys, time
 from argparse import ArgumentParser
 
+# Set CUDA memory configuration before any torch imports
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+
 from src.utils.preprocess import CropAndExtract
 from src.test_audio2coeff import Audio2Coeff  
 from src.facerender.animate import AnimateFromCoeff
@@ -122,8 +125,11 @@ def main(args):
         free_mem = total_mem - allocated_mem
         print(f"Pre-face-renderer VRAM: {free_mem:.1f}GB free / {total_mem:.1f}GB total")
         
-        if free_mem < 8.0:  # If less than 8GB free
-            print("WARNING: Low VRAM detected, using minimal face renderer...")
+        # Dynamic threshold based on total GPU memory (use 50% of total as threshold)
+        memory_threshold = total_mem * 0.5
+        if free_mem < memory_threshold:
+            print(f"WARNING: Low VRAM detected ({free_mem:.1f}GB free, threshold: {memory_threshold:.1f}GB)")
+            print("Using minimal face renderer mode...")
             # Set environment variable for minimal mode
             os.environ['SADTALKER_MINIMAL_MODE'] = '1'
     
@@ -239,45 +245,73 @@ def main(args):
     effective_batch_size = batch_size
     if torch.cuda.is_available() and args.device == "cuda":
         try:
+            # CRITICAL: Set memory fragmentation settings first
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+            
             # Get detailed GPU memory information
             gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
             allocated_memory_gb = torch.cuda.memory_allocated() / 1024**3
             available_memory_gb = gpu_memory_gb - allocated_memory_gb
             
+            # Calculate memory ratio based on 24GB reference (dynamic scaling)
+            memory_ratio = gpu_memory_gb / 24.0
+            available_ratio = available_memory_gb / 24.0
+            
             print(f"GPU Memory Status: {available_memory_gb:.1f}GB available out of {gpu_memory_gb:.1f}GB total")
             
-            # Aggressive memory optimizations for low-memory systems
-            if available_memory_gb < 4:
-                effective_batch_size = 1  # Force single batch for stability
-                print(f"Critical GPU memory constraint ({available_memory_gb:.1f}GB available)")
-                print("Enabling aggressive memory optimizations and forcing batch size to 1")
-                
-                # Clear any existing cache
-                torch.cuda.empty_cache()
-                import gc
-                gc.collect()
-                
-                # Disable cudnn benchmark for memory consistency
+            # Dynamic memory management based on available memory ratio
+            if available_ratio < 0.125:  # Less than 12.5% of 24GB (3GB)
+                print(f"🚨 CRITICAL GPU MEMORY ({available_memory_gb:.1f}GB) - Ultra Conservation Mode")
+                effective_batch_size = 1
                 torch.backends.cudnn.benchmark = False
+                torch.backends.cudnn.deterministic = True
                 
-            elif available_memory_gb < 6:  # Less than 6GB available
+                # Aggressive memory cleanup
+                for i in range(5):
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                
+                # Conservative memory fraction
+                torch.cuda.set_per_process_memory_fraction(0.7)
+                print("🔧 Set CUDA memory fraction to 70% for stability")
+                
+                # Disable enhancers to save memory
+                if args.enhancer or args.background_enhancer:
+                    print("⚠️ Disabling enhancers due to low memory")
+                    args.enhancer = None
+                    args.background_enhancer = None
+                
+            elif available_ratio < 0.25:  # Less than 25% of 24GB (6GB)
+                print(f"⚠️ LOW GPU MEMORY ({available_memory_gb:.1f}GB) - Conservative Mode")
                 effective_batch_size = max(1, batch_size // 4)
-                print(f"Low GPU memory ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
+                torch.cuda.set_per_process_memory_fraction(0.8)
                 
-            elif available_memory_gb < 10:  # Less than 10GB available
+                # Moderate memory cleanup
+                for i in range(3):
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                
+            elif available_ratio < 0.42:  # Less than 42% of 24GB (10GB)
+                print(f"📊 MODERATE GPU MEMORY ({available_memory_gb:.1f}GB) - Balanced Mode")
                 effective_batch_size = max(1, batch_size // 2)
-                print(f"Moderate GPU memory ({available_memory_gb:.1f}GB available), reducing batch size to {effective_batch_size}")
-            else:
+                
+            elif available_ratio < 0.67:  # Less than 67% of 24GB (16GB)
+                print(f"✅ GOOD GPU MEMORY ({available_memory_gb:.1f}GB) - Standard Mode")
                 effective_batch_size = batch_size
-                print(f"Sufficient GPU memory ({available_memory_gb:.1f}GB available), using requested batch size {effective_batch_size}")
+                
+            else:
+                print(f"🚀 HIGH GPU MEMORY ({available_memory_gb:.1f}GB) - Performance Mode")
+                effective_batch_size = batch_size
             
-            # Enhanced warning for enhancer memory usage
+            # Dynamic enhancer handling based on memory ratio
             if (args.enhancer or args.background_enhancer):
-                if available_memory_gb < 8:
-                    print(f"Warning: Using enhancer with limited GPU memory ({available_memory_gb:.1f}GB available).")
-                    print("Enhancement will use conservative settings and aggressive memory management.")
+                if available_ratio < 0.33:  # Less than 33% of 24GB (8GB)
+                    print(f"⚠️ Limited memory for enhancers ({available_memory_gb:.1f}GB available)")
+                    print("Enhancement will use conservative settings")
                 else:
-                    print(f"Enhancement will use high-quality settings with {available_memory_gb:.1f}GB available memory.")
+                    print(f"✅ Sufficient memory for enhancers ({available_memory_gb:.1f}GB available)")
             
         except Exception as e:
             print(f"Warning: Could not check GPU memory, using default batch size: {e}")
@@ -296,15 +330,14 @@ def main(args):
                                     batch_size=effective_batch_size)
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
-            print(f"GPU out of memory with batch size {effective_batch_size}")
+            print(f"🚨 GPU out of memory with batch size {effective_batch_size}")
             
-            # Progressive memory recovery
+            # Dynamic OOM recovery based on current batch size
             if effective_batch_size > 1:
-                print("Attempting recovery with batch size 1...")
+                print("🔧 Attempting recovery with batch size 1...")
                 torch.cuda.empty_cache()
-                import gc
                 gc.collect()
-                time.sleep(1)  # Brief pause for memory cleanup
+                time.sleep(1)
                 
                 try:
                     result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
@@ -313,25 +346,45 @@ def main(args):
                                                 batch_size=1)
                 except RuntimeError as e2:
                     if "out of memory" in str(e2).lower():
-                        print("Still out of memory even with batch size 1. Attempting without enhancer...")
-                        # Last resort: disable enhancer and try again
+                        print("🔧 Still OOM with batch size 1. Disabling enhancers...")
                         result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
                                                     enhancer=None, background_enhancer=None, 
                                                     preprocess=args.preprocess, img_size=args.size, profile=profile, 
                                                     batch_size=1)
-                        print("Warning: Enhancement was disabled due to memory constraints.")
+                        print("⚠️ Enhancement disabled due to memory constraints")
                     else:
                         raise e2
             else:
-                print("Already using minimum batch size. Trying without enhancer...")
+                print("🔧 Already minimum batch size. Disabling enhancers...")
                 torch.cuda.empty_cache()
-                import gc
                 gc.collect()
-                result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
-                                            enhancer=None, background_enhancer=None, 
-                                            preprocess=args.preprocess, img_size=args.size, profile=profile, 
-                                            batch_size=1)
-                print("Warning: Enhancement was disabled due to memory constraints.")
+                
+                try:
+                    result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
+                                                enhancer=None, background_enhancer=None, 
+                                                preprocess=args.preprocess, img_size=args.size, profile=profile, 
+                                                batch_size=1)
+                    print("⚠️ Enhancement disabled due to memory constraints")
+                except RuntimeError as e2:
+                    if "out of memory" in str(e2).lower():
+                        print("🚨 Critical OOM. Switching to CPU fallback...")
+                        args.device = "cpu"
+                        args.cpu = True
+                        
+                        # Reinitialize with CPU
+                        del animate_from_coeff
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        
+                        animate_from_coeff = AnimateFromCoeff(sadtalker_paths, "cpu", optimization_level="low")
+                        
+                        result = animate_from_coeff.generate(data, save_dir, pic_path, crop_info, \
+                                                    enhancer=None, background_enhancer=None, 
+                                                    preprocess=args.preprocess, img_size=args.size, profile=profile, 
+                                                    batch_size=1)
+                        print("✅ CPU fallback successful")
+                    else:
+                        raise e2
         else:
             raise e
 

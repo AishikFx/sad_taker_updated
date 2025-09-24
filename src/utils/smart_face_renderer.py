@@ -11,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from contextlib import nullcontext
 
 # Import the basic animation functions we need
 from src.facerender.modules.make_animation import get_rotation_matrix, keypoint_transformation
@@ -200,22 +201,58 @@ class SmartFaceRenderWorker:
                                batch_size: int) -> torch.Tensor:
         """Core rendering function with specified batch size."""
         
+        # Dynamic memory management based on available VRAM
+        if torch.cuda.is_available():
+            total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
+            
+            # Calculate memory ratio for dynamic thresholds
+            memory_ratio = total_memory_gb / 24.0
+            available_ratio = available_memory_gb / 24.0
+            
+            # Adaptive memory cleanup based on available memory ratio
+            if available_ratio < 0.17:  # Less than 17% of 24GB (4GB)
+                # Aggressive cleanup for low memory
+                import gc
+                for _ in range(3):
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            elif available_ratio < 0.33:  # Less than 33% of 24GB (8GB)
+                # Moderate cleanup for medium memory
+                torch.cuda.empty_cache()
+        
         with torch.no_grad():
-            # Enable mixed precision if configured
-            if self.use_mixed_precision and torch.cuda.is_available():
+            # Dynamic mixed precision based on memory availability
+            use_autocast = False
+            if torch.cuda.is_available():
+                total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
+                memory_ratio = total_memory_gb / 24.0
+                available_ratio = available_memory_gb / 24.0
+                # Only use mixed precision if we have sufficient memory (saves memory overhead)
+                use_autocast = self.use_mixed_precision and available_ratio >= 0.25  # 25% of 24GB (6GB)
+            
+            if use_autocast:
                 try:
                     autocast = torch.cuda.amp.autocast
                 except AttributeError:
-                    # Fallback for older PyTorch versions
-                    from contextlib import nullcontext
                     autocast = nullcontext
             else:
-                from contextlib import nullcontext
                 autocast = nullcontext
             
             with autocast():
-                # Pre-compute source keypoints once
+                # Pre-compute source keypoints once with immediate cleanup
                 kp_canonical = kp_detector(source_image)
+                
+                # Immediate cleanup after keypoint detection if low memory
+                if torch.cuda.is_available():
+                    total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
+                    available_ratio = available_memory_gb / 24.0
+                    if available_ratio < 0.25:  # Less than 25% of 24GB (6GB)
+                        torch.cuda.empty_cache()
+                
                 he_source = mapping(source_semantics)
                 kp_source = keypoint_transformation(kp_canonical, he_source, wo_exp=False)
                 
@@ -255,12 +292,30 @@ class SmartFaceRenderWorker:
                     out = generator(source_image, kp_source=kp_source, kp_driving=kp_norm)
                     predictions.append(out['prediction'])
                     
-                    # Periodic GPU memory cleanup for stability
+                    # Dynamic GPU memory cleanup based on available memory
                     if torch.cuda.is_available() and len(predictions) % 10 == 0:
-                        torch.cuda.empty_cache()
+                        total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                        available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
+                        available_ratio = available_memory_gb / 24.0
+                        
+                        # More frequent cleanup for low memory systems
+                        cleanup_frequency = 5 if available_ratio < 0.25 else 10  # 25% of 24GB (6GB)
+                        if len(predictions) % cleanup_frequency == 0:
+                            torch.cuda.empty_cache()
+                            if available_ratio < 0.17:  # Less than 17% of 24GB (4GB)
+                                import gc
+                                gc.collect()
                 
                 # Stack all predictions with proper dimensions
                 predictions_ts = torch.stack(predictions, dim=1)
+                
+                # Final cleanup for low memory systems
+                if torch.cuda.is_available():
+                    total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
+                    available_ratio = available_memory_gb / 24.0
+                    if available_ratio < 0.25:  # Less than 25% of 24GB (6GB)
+                        torch.cuda.empty_cache()
         
         return predictions_ts
 

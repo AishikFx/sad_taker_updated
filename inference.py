@@ -77,7 +77,7 @@ def main(args):
     pic_path = args.source_image
     print(f'DEBUG: args.source_image = {args.source_image}')
     print(f'DEBUG: pic_path = {pic_path}')
-    audio_path = args.driven_audio
+    # audio_path is already set above (either from TTS or args.driven_audio)
     save_dir = os.path.join(args.result_dir, strftime("%Y_%m_%d_%H.%M.%S"))
     os.makedirs(save_dir, exist_ok=True)
     pose_style = args.pose_style

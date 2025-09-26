@@ -259,55 +259,67 @@ class SmartFaceRenderWorker:
                 total_frames = target_semantics.shape[1]
                 predictions = []
                 
-                # Process frames with natural animation mode
-                desc = 'Smart Face Renderer (Natural Animation)' if self.natural_animation else 'Smart Face Renderer (Optimized)'
-                for frame_idx in tqdm(range(total_frames), desc):
-                    # Extract single frame semantics
-                    target_semantics_frame = target_semantics[:, frame_idx]
+                # Process frames in batches for GPU efficiency
+                desc = f'Smart Face Renderer (Batch={batch_size}, Natural Animation)' if self.natural_animation else f'Smart Face Renderer (Batch={batch_size}, Optimized)'
+                for start_idx in tqdm(range(0, total_frames, batch_size), desc):
+                    end_idx = min(start_idx + batch_size, total_frames)
+                    current_batch_size = end_idx - start_idx
                     
-                    # Map frame semantics to head pose
-                    he_driving = mapping(target_semantics_frame)
+                    # Prepare batch data efficiently
+                    batch_target_semantics = target_semantics[:, start_idx:end_idx]
+                    batch_target_semantics = batch_target_semantics.reshape(-1, batch_target_semantics.shape[-1])
                     
-                    # Handle pose sequences
+                    # Batch process driving parameters
+                    he_driving_batch = mapping(batch_target_semantics)
+                    
+                    # Handle pose sequences in batch
                     if yaw_c_seq is not None:
-                        he_driving['yaw_in'] = yaw_c_seq[:, frame_idx]
+                        he_driving_batch['yaw_in'] = yaw_c_seq[:, start_idx:end_idx].reshape(-1)
                     if pitch_c_seq is not None:
-                        he_driving['pitch_in'] = pitch_c_seq[:, frame_idx]
+                        he_driving_batch['pitch_in'] = pitch_c_seq[:, start_idx:end_idx].reshape(-1)
                     if roll_c_seq is not None:
-                        he_driving['roll_in'] = roll_c_seq[:, frame_idx]
+                        he_driving_batch['roll_in'] = roll_c_seq[:, start_idx:end_idx].reshape(-1)
                     
-                    # Keypoint transformation with expressions preserved
-                    kp_driving = keypoint_transformation(kp_canonical, he_driving, wo_exp=False)
+                    # Batch keypoint transformation
+                    kp_canonical_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_canonical.items()}
+                    kp_driving_batch = keypoint_transformation(kp_canonical_batch, he_driving_batch, wo_exp=False)
                     
                     # Choose animation approach based on natural_animation setting
                     if self.natural_animation:
                         # Natural mode: Use raw keypoints like original SadTalker for maximum realism
-                        kp_norm = kp_driving
+                        kp_norm_batch = kp_driving_batch
                     else:
                         # Optimized mode: Use keypoint normalization (may reduce some micro-expressions)
                         # For now, we'll still use raw keypoints for best quality
-                        kp_norm = kp_driving
+                        kp_norm_batch = kp_driving_batch
                     
-                    # Generate frame
-                    out = generator(source_image, kp_source=kp_source, kp_driving=kp_norm)
-                    predictions.append(out['prediction'])
+                    # Batch generation - THIS IS THE KEY GPU EFFICIENCY IMPROVEMENT
+                    source_image_batch = source_image.repeat(current_batch_size, 1, 1, 1)
+                    kp_source_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_source.items()}
+                    
+                    # Generate all frames in this batch at once
+                    out_batch = generator(source_image_batch, kp_source=kp_source_batch, kp_driving=kp_norm_batch)
+                    
+                    # Reshape batch predictions back to sequence format
+                    batch_predictions = out_batch['prediction'].reshape(1, current_batch_size, *out_batch['prediction'].shape[1:])
+                    predictions.append(batch_predictions)
                     
                     # Dynamic GPU memory cleanup based on available memory
-                    if torch.cuda.is_available() and len(predictions) % 10 == 0:
+                    if torch.cuda.is_available() and len(predictions) % 4 == 0:
                         total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
                         available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
                         available_ratio = available_memory_gb / 24.0
                         
                         # More frequent cleanup for low memory systems
-                        cleanup_frequency = 5 if available_ratio < 0.25 else 10  # 25% of 24GB (6GB)
+                        cleanup_frequency = 2 if available_ratio < 0.25 else 4  # 25% of 24GB (6GB)
                         if len(predictions) % cleanup_frequency == 0:
                             torch.cuda.empty_cache()
                             if available_ratio < 0.17:  # Less than 17% of 24GB (4GB)
                                 import gc
                                 gc.collect()
                 
-                # Stack all predictions with proper dimensions
-                predictions_ts = torch.stack(predictions, dim=1)
+                # Concatenate all batch predictions
+                predictions_ts = torch.cat(predictions, dim=1)
                 
                 # Final cleanup for low memory systems
                 if torch.cuda.is_available():

@@ -27,6 +27,71 @@ class QualityFaceRenderMemoryManager:
         self.successful_batch_sizes = []
         self.failed_batch_sizes = []
         self.last_successful_batch_size = None
+        
+        # Auto-detect GPU capabilities
+        self.gpu_info = self._detect_gpu_capabilities()
+        self._print_gpu_info()
+
+    def _detect_gpu_capabilities(self) -> dict:
+        """Auto-detect GPU capabilities and return optimization settings."""
+        if not torch.cuda.is_available():
+            return {
+                'device': 'cpu',
+                'memory_gb': 0,
+                'name': 'CPU',
+                'compute_capability': None,
+                'recommended_batch_size': 2,
+                'use_mixed_precision': False,
+                'memory_tier': 'low'
+            }
+        
+        device_props = torch.cuda.get_device_properties(0)
+        total_memory_gb = device_props.total_memory / 1e9
+        gpu_name = device_props.name
+        compute_capability = f"{device_props.major}.{device_props.minor}"
+        
+        # Determine memory tier and recommendations
+        if total_memory_gb >= 20:  # High-end GPUs (RTX 3090, 4090, A100, etc.)
+            memory_tier = 'high'
+            recommended_batch_size = 12
+            use_mixed_precision = True
+        elif total_memory_gb >= 10:  # Mid-high GPUs (RTX 3080, 4070Ti, etc.)
+            memory_tier = 'medium-high' 
+            recommended_batch_size = 8
+            use_mixed_precision = True
+        elif total_memory_gb >= 6:   # Mid GPUs (RTX 3060, 4060, etc.)
+            memory_tier = 'medium'
+            recommended_batch_size = 6
+            use_mixed_precision = True
+        elif total_memory_gb >= 4:   # Low-mid GPUs (GTX 1660, RTX 3050, etc.)
+            memory_tier = 'low-medium'
+            recommended_batch_size = 4
+            use_mixed_precision = False  # Less overhead
+        else:                         # Low-end GPUs
+            memory_tier = 'low'
+            recommended_batch_size = 2
+            use_mixed_precision = False
+        
+        return {
+            'device': 'cuda',
+            'memory_gb': total_memory_gb,
+            'name': gpu_name,
+            'compute_capability': compute_capability,
+            'recommended_batch_size': recommended_batch_size,
+            'use_mixed_precision': use_mixed_precision,
+            'memory_tier': memory_tier
+        }
+    
+    def _print_gpu_info(self):
+        """Print detected GPU information and recommendations."""
+        info = self.gpu_info
+        print(f"🔍 GPU Auto-Detection Results:")
+        print(f"   Device: {info['name']}")
+        print(f"   Memory: {info['memory_gb']:.1f}GB ({info['memory_tier']} tier)")
+        if info['compute_capability']:
+            print(f"   Compute: {info['compute_capability']}")
+        print(f"   Recommended Batch Size: {info['recommended_batch_size']}")
+        print(f"   Mixed Precision: {'Enabled' if info['use_mixed_precision'] else 'Disabled'}")
 
     def get_vram_info(self) -> dict:
         """Returns VRAM information in GB."""
@@ -42,28 +107,59 @@ class QualityFaceRenderMemoryManager:
         }
 
     def estimate_face_render_memory_per_frame(self, img_size: int = 256) -> float:
-        """Conservative memory estimation for stable face rendering."""
-        # Conservative memory estimation for stability
-        base_memory_gb = 0.5  # Conservative base estimate
-        resolution_factor = (img_size / 256) ** 2  # Linear scaling for safety
+        """GPU-adaptive memory estimation for face rendering."""
+        # Base memory estimation that adapts to GPU tier
+        base_memory_gb = {
+            'high': 0.3,        # High-end GPUs can handle more efficient memory usage
+            'medium-high': 0.4,
+            'medium': 0.5,
+            'low-medium': 0.6,
+            'low': 0.8          # Conservative for low-end GPUs
+        }.get(self.gpu_info['memory_tier'], 0.5)
+        
+        resolution_factor = (img_size / 256) ** 2
         memory_per_frame = base_memory_gb * resolution_factor
-        overhead_factor = 1.3  # Conservative overhead
+        
+        # Adaptive overhead based on GPU capabilities
+        overhead_factor = {
+            'high': 1.2,        # Less overhead on high-end GPUs
+            'medium-high': 1.25,
+            'medium': 1.3,
+            'low-medium': 1.35,
+            'low': 1.4          # More overhead on low-end GPUs
+        }.get(self.gpu_info['memory_tier'], 1.3)
+        
         return memory_per_frame * overhead_factor
 
     def get_safe_batch_size(self, requested_size: int, img_size: int = 256) -> int:
-        """Calculate safe batch size for face rendering based on available VRAM."""
+        """Calculate safe batch size based on GPU capabilities and available VRAM."""
         if not torch.cuda.is_available():
-            return max(1, min(8, requested_size))  # CPU fallback
+            return max(1, min(4, requested_size))  # CPU fallback
         
+        # Start with GPU-recommended batch size
+        gpu_recommended = self.gpu_info['recommended_batch_size']
+        
+        # Calculate memory-based batch size
         vram = self.get_vram_info()
         available_gb = vram['free'] * self.safety_margin
         
         memory_per_frame = self.estimate_face_render_memory_per_frame(img_size)
         memory_based_batch_size = max(1, int(available_gb / memory_per_frame))
         
+        # Apply GPU tier scaling
+        tier_multiplier = {
+            'high': 1.2,
+            'medium-high': 1.1,
+            'medium': 1.0,
+            'low-medium': 0.9,
+            'low': 0.8
+        }.get(self.gpu_info['memory_tier'], 1.0)
+        
+        memory_based_batch_size = int(memory_based_batch_size * tier_multiplier)
+        
         # Apply OOM penalty if we've had failures
         if self.oom_count > 0:
-            penalty_factor = 2 ** self.oom_count
+            penalty_factor = 2 ** min(self.oom_count, 3)  # Cap penalty
             memory_based_batch_size = max(1, memory_based_batch_size // penalty_factor)
         
         # Avoid known failed batch sizes
@@ -74,7 +170,12 @@ class QualityFaceRenderMemoryManager:
         if self.last_successful_batch_size:
             memory_based_batch_size = min(memory_based_batch_size, self.last_successful_batch_size + 2)
         
-        final_batch_size = min(requested_size, memory_based_batch_size)
+        # Combine GPU recommendation with memory calculation
+        final_batch_size = min(
+            requested_size,
+            gpu_recommended,
+            memory_based_batch_size
+        )
         
         return max(1, final_batch_size)
 
@@ -109,17 +210,21 @@ class SmartFaceRenderWorker:
         self.natural_animation = natural_animation
         self.memory_manager = QualityFaceRenderMemoryManager()
         
-        # Quality-focused settings
-        self.use_mixed_precision = False  # Disable for quality
-        self.aggressive_batching = False  # Disable for stability
+        # Auto-configure settings based on GPU capabilities
+        gpu_info = self.memory_manager.gpu_info
+        self.use_mixed_precision = gpu_info['use_mixed_precision']
+        self.aggressive_batching = gpu_info['memory_tier'] in ['high', 'medium-high']
         
         # Performance tracking
         self.total_frames_processed = 0
         self.total_processing_time = 0.0
         
-        print(f" SmartFaceRenderWorker initialized:")
+        print(f"⚡ SmartFaceRenderWorker initialized:")
+        print(f"    GPU Tier: {gpu_info['memory_tier']}")
         print(f"    Optimization: {optimization_level}")
+        print(f"    Mixed Precision: {'Enabled' if self.use_mixed_precision else 'Disabled'}")
         print(f"    Natural Animation: {'Enabled (raw keypoints for realism)' if natural_animation else 'Disabled (optimized keypoints)'}")
+        print(f"    Aggressive Batching: {'Enabled' if self.aggressive_batching else 'Disabled'}")
 
     def render_animation_smart(self, 
                               source_image: torch.Tensor, 
@@ -200,24 +305,34 @@ class SmartFaceRenderWorker:
                                batch_size: int) -> torch.Tensor:
         """Core rendering function with specified batch size."""
         
-        # Dynamic memory management based on available VRAM
+        # Dynamic memory management based on GPU tier and available VRAM
+        gpu_info = self.memory_manager.gpu_info
         if torch.cuda.is_available():
-            total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            total_memory_gb = gpu_info['memory_gb']
             available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
             
-            # Calculate memory ratio for dynamic thresholds
-            memory_ratio = total_memory_gb / 24.0
-            available_ratio = available_memory_gb / 24.0
+            # GPU-adaptive memory cleanup thresholds
+            cleanup_thresholds = {
+                'high': {'aggressive': 0.15, 'moderate': 0.30},      # 20GB+ GPUs
+                'medium-high': {'aggressive': 0.20, 'moderate': 0.35}, # 10-20GB GPUs  
+                'medium': {'aggressive': 0.25, 'moderate': 0.40},      # 6-10GB GPUs
+                'low-medium': {'aggressive': 0.30, 'moderate': 0.45},  # 4-6GB GPUs
+                'low': {'aggressive': 0.35, 'moderate': 0.50}          # <4GB GPUs
+            }
             
-            # Adaptive memory cleanup based on available memory ratio
-            if available_ratio < 0.17:  # Less than 17% of 24GB (4GB)
+            thresholds = cleanup_thresholds.get(gpu_info['memory_tier'], cleanup_thresholds['medium'])
+            memory_ratio = total_memory_gb / 24.0
+            available_ratio = available_memory_gb / total_memory_gb
+            
+            # Adaptive memory cleanup based on GPU tier and available memory
+            if available_ratio < thresholds['aggressive']:
                 # Aggressive cleanup for low memory
                 import gc
                 for _ in range(3):
                     gc.collect()
                     torch.cuda.empty_cache()
                     torch.cuda.synchronize()
-            elif available_ratio < 0.33:  # Less than 33% of 24GB (8GB)
+            elif available_ratio < thresholds['moderate']:
                 # Moderate cleanup for medium memory
                 torch.cuda.empty_cache()
         
@@ -258,62 +373,61 @@ class SmartFaceRenderWorker:
                 total_frames = target_semantics.shape[1]
                 predictions = []
                 
-                # Process frames in batches for maximum GPU utilization
+                # Process frames in batches for better GPU utilization
                 desc = f'Smart Face Renderer (Batch={batch_size}, Natural Animation)' if self.natural_animation else f'Smart Face Renderer (Batch={batch_size}, Optimized)'
-                for start_idx in tqdm(range(0, total_frames, batch_size), desc):
+                for start_idx in tqdm(range(0, total_frames, batch_size), desc=desc):
                     end_idx = min(start_idx + batch_size, total_frames)
                     current_batch_size = end_idx - start_idx
                     
-                    # Prepare batch data - follow exact working make_animation_fast.py approach
-                    batch_target_semantics = target_semantics[:, start_idx:end_idx]
-                    batch_target_semantics = batch_target_semantics.reshape(-1, batch_target_semantics.shape[-1])
+                    # Process batch of frames through mapping network individually (it doesn't support batching)
+                    he_driving_list = []
+                    for frame_idx in range(start_idx, end_idx):
+                        frame_semantics = target_semantics[:, frame_idx]  # [1, feature_dim] - single frame
+                        he_driving = mapping(frame_semantics)  # Process single frame through mapping
+                        
+                        # Handle pose sequences for this frame
+                        if yaw_c_seq is not None:
+                            he_driving['yaw_in'] = yaw_c_seq[:, frame_idx]
+                        if pitch_c_seq is not None:
+                            he_driving['pitch_in'] = pitch_c_seq[:, frame_idx]
+                        if roll_c_seq is not None:
+                            he_driving['roll_in'] = roll_c_seq[:, frame_idx]
+                        
+                        he_driving_list.append(he_driving)
                     
-                    # Batch process driving parameters - pass entire batch to mapping
-                    he_driving_batch = mapping(batch_target_semantics)
-                    
-                    # Handle pose sequences in batch
-                    if yaw_c_seq is not None:
-                        batch_yaw = yaw_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
-                        he_driving_batch['yaw_in'] = batch_yaw
-                    if pitch_c_seq is not None:
-                        batch_pitch = pitch_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
-                        he_driving_batch['pitch_in'] = batch_pitch
-                    if roll_c_seq is not None:
-                        batch_roll = roll_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
-                        he_driving_batch['roll_in'] = batch_roll
-                    
-                    # Batch keypoint transformation
-                    kp_canonical_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_canonical.items()}
-                    kp_driving_batch = keypoint_transformation(kp_canonical_batch, he_driving_batch, wo_exp=False)
+                    # Batch keypoint transformations - create separate keypoints for each frame
+                    kp_driving_list = []
+                    for he_driving in he_driving_list:
+                        kp_driving = keypoint_transformation(kp_canonical, he_driving, wo_exp=False)
+                        kp_driving_list.append(kp_driving)
                     
                     # Choose animation approach based on natural_animation setting
                     if self.natural_animation:
                         # Natural mode: Use raw keypoints like original SadTalker for maximum realism
-                        kp_norm_batch = kp_driving_batch
+                        kp_norm_list = kp_driving_list
                     else:
                         # Optimized mode: Use keypoint normalization (may reduce some micro-expressions)
                         # For now, we'll still use raw keypoints for best quality
-                        kp_norm_batch = kp_driving_batch
+                        kp_norm_list = kp_driving_list
                     
-                    # Batch generation - follow working make_animation_fast.py approach
-                    source_image_batch = source_image.repeat(current_batch_size, 1, 1, 1)
-                    kp_source_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_source.items()}
+                    # Process frames individually through generator (it expects single frame inputs)
+                    batch_predictions = []
+                    for kp_norm in kp_norm_list:
+                        out = generator(source_image, kp_source=kp_source, kp_driving=kp_norm)
+                        batch_predictions.append(out['prediction'])
                     
-                    # Generate all frames in this batch at once
-                    out_batch = generator(source_image_batch, kp_source=kp_source_batch, kp_driving=kp_norm_batch)
-                    
-                    # Reshape batch predictions back to sequence format - follow working approach
-                    batch_predictions = out_batch['prediction'].reshape(1, current_batch_size, *out_batch['prediction'].shape[1:])
-                    predictions.append(batch_predictions)
+                    # Batch the predictions efficiently
+                    batch_predictions_tensor = torch.stack(batch_predictions, dim=1)  # [1, current_batch_size, 3, H, W]
+                    predictions.append(batch_predictions_tensor)
                     
                     # Dynamic GPU memory cleanup based on available memory
-                    if torch.cuda.is_available() and len(predictions) % 4 == 0:
+                    if torch.cuda.is_available() and len(predictions) % 2 == 0:
                         total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
                         available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
                         available_ratio = available_memory_gb / 24.0
                         
                         # More frequent cleanup for low memory systems
-                        cleanup_frequency = 2 if available_ratio < 0.25 else 4  # 25% of 24GB (6GB)
+                        cleanup_frequency = 1 if available_ratio < 0.25 else 2  # 25% of 24GB (6GB)
                         if len(predictions) % cleanup_frequency == 0:
                             torch.cuda.empty_cache()
                             if available_ratio < 0.17:  # Less than 17% of 24GB (4GB)
@@ -321,7 +435,7 @@ class SmartFaceRenderWorker:
                                 gc.collect()
                 
                 # Concatenate all batch predictions
-                predictions_ts = torch.cat(predictions, dim=1)
+                predictions_ts = torch.cat(predictions, dim=1)  # [1, total_frames, 3, H, W]
                 
                 # Final cleanup for low memory systems
                 if torch.cuda.is_available():

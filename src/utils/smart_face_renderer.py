@@ -265,20 +265,12 @@ class SmartFaceRenderWorker:
                     end_idx = min(start_idx + batch_size, total_frames)
                     current_batch_size = end_idx - start_idx
                     
-                    # Prepare batch data efficiently - keep batch dimension for mapping network
-                    batch_target_semantics = target_semantics[:, start_idx:end_idx]  # shape: [1, batch_frames, feature_dim]
+                    # Prepare batch data efficiently - follow working make_animation_fast.py approach
+                    batch_target_semantics = target_semantics[:, start_idx:end_idx]
+                    batch_target_semantics = batch_target_semantics.reshape(-1, batch_target_semantics.shape[-1])
                     
-                    # Process each frame in the batch individually (mapping network doesn't support batching)
-                    he_driving_batch_list = []
-                    for frame_idx in range(current_batch_size):
-                        frame_semantics = batch_target_semantics[:, frame_idx]  # shape: [1, feature_dim]
-                        he_driving = mapping(frame_semantics)
-                        he_driving_batch_list.append(he_driving)
-                    
-                    # Convert list of dicts to dict of tensors
-                    he_driving_batch = {}
-                    for key in he_driving_batch_list[0].keys():
-                        he_driving_batch[key] = torch.cat([h[key] for h in he_driving_batch_list], dim=0)  # shape: [batch_frames, ...]
+                    # Batch process driving parameters - pass entire batch to mapping
+                    he_driving_batch = mapping(batch_target_semantics)
                     
                     # Handle pose sequences in batch
                     if yaw_c_seq is not None:
@@ -304,19 +296,15 @@ class SmartFaceRenderWorker:
                         # For now, we'll still use raw keypoints for best quality
                         kp_norm_batch = kp_driving_batch
                     
-                    # Batch generation - call generator for each frame (generator may not support batching)
-                    batch_predictions_list = []
-                    for frame_idx in range(current_batch_size):
-                        # Extract single frame inputs
-                        source_image_frame = source_image
-                        kp_source_frame = kp_source
-                        kp_driving_frame = {k: v[frame_idx:frame_idx+1] for k, v in kp_norm_batch.items()}
-                        
-                        out = generator(source_image_frame, kp_source=kp_source_frame, kp_driving=kp_driving_frame)
-                        batch_predictions_list.append(out['prediction'])
+                    # Batch generation - follow working make_animation_fast.py approach
+                    source_image_batch = source_image.repeat(current_batch_size, 1, 1, 1)
+                    kp_source_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_source.items()}
                     
-                    # Stack predictions for this batch
-                    batch_predictions = torch.stack(batch_predictions_list, dim=0).unsqueeze(0)  # [1, current_batch_size, 3, 256, 256]
+                    # Generate all frames in this batch at once
+                    out_batch = generator(source_image_batch, kp_source=kp_source_batch, kp_driving=kp_norm_batch)
+                    
+                    # Reshape batch predictions back to sequence format - follow working approach
+                    batch_predictions = out_batch['prediction'].reshape(1, current_batch_size, *out_batch['prediction'].shape[1:])
                     predictions.append(batch_predictions)
                     
                     # Dynamic GPU memory cleanup based on available memory

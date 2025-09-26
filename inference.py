@@ -110,11 +110,11 @@ def main(args):
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
     
-    # Set memory fraction for optimal GPU utilization (increased from 80% to 95%)
+    # Set memory fraction for optimal GPU utilization (configurable via args)
     if torch.cuda.is_available():
         try:
-            torch.cuda.set_per_process_memory_fraction(0.95)  # Use 95% of VRAM for better utilization
-            print("Set CUDA memory fraction to 95% for optimal GPU utilization")
+            torch.cuda.set_per_process_memory_fraction(args.gpu_memory_fraction)
+            print(f"Set CUDA memory fraction to {args.gpu_memory_fraction*100:.0f}% for GPU utilization")
         except:
             pass
     
@@ -274,9 +274,9 @@ def main(args):
                         torch.cuda.empty_cache()
                         torch.cuda.synchronize()
                 
-                # Conservative memory fraction
-                torch.cuda.set_per_process_memory_fraction(0.7)
-                print("🔧 Set CUDA memory fraction to 70% for stability")
+                # Conservative memory fraction (use configured value)
+                torch.cuda.set_per_process_memory_fraction(min(args.gpu_memory_fraction, 0.7))
+                print(f"🔧 Set CUDA memory fraction to {min(args.gpu_memory_fraction, 0.7)*100:.0f}% for stability")
                 
                 # Disable enhancers to save memory
                 if args.enhancer or args.background_enhancer:
@@ -287,7 +287,7 @@ def main(args):
             elif available_memory_gb < 8:  # Less than 8GB available
                 print(f"⚠️ LOW GPU MEMORY ({available_memory_gb:.1f}GB) - Conservative Mode")
                 effective_batch_size = max(1, batch_size // 2)
-                torch.cuda.set_per_process_memory_fraction(0.85)
+                torch.cuda.set_per_process_memory_fraction(min(args.gpu_memory_fraction, 0.85))
                 
                 # Moderate memory cleanup
                 for i in range(3):
@@ -491,6 +491,7 @@ if __name__ == '__main__':
     parser.add_argument("--result_dir", default='./results', help="path to output")
     parser.add_argument("--pose_style", type=int, default=0,  help="input pose style from [0, 46)")
     parser.add_argument("--batch_size", type=int, default=8,  help="the batch size of facerender")
+    parser.add_argument("--gpu_memory_fraction", type=float, default=0.8, help="GPU memory fraction to use (0.1-0.95)")
     parser.add_argument("--size", type=int, default=256,  help="the image size of the facerender")
     parser.add_argument("--expression_scale", type=float, default=1.,  help="the batch size of facerender")
     parser.add_argument('--input_yaw', nargs='+', type=int, default=None, help="the input yaw degree of the user ")

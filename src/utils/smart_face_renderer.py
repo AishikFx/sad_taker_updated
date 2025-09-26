@@ -265,20 +265,31 @@ class SmartFaceRenderWorker:
                     end_idx = min(start_idx + batch_size, total_frames)
                     current_batch_size = end_idx - start_idx
                     
-                    # Prepare batch data efficiently
-                    batch_target_semantics = target_semantics[:, start_idx:end_idx]
-                    batch_target_semantics = batch_target_semantics.reshape(-1, batch_target_semantics.shape[-1])
+                    # Prepare batch data efficiently - keep batch dimension for mapping network
+                    batch_target_semantics = target_semantics[:, start_idx:end_idx]  # shape: [1, batch_frames, feature_dim]
                     
-                    # Batch process driving parameters
-                    he_driving_batch = mapping(batch_target_semantics)
+                    # Process each frame in the batch individually (mapping network doesn't support batching)
+                    he_driving_batch_list = []
+                    for frame_idx in range(current_batch_size):
+                        frame_semantics = batch_target_semantics[:, frame_idx]  # shape: [1, feature_dim]
+                        he_driving = mapping(frame_semantics)
+                        he_driving_batch_list.append(he_driving)
+                    
+                    # Convert list of dicts to dict of tensors
+                    he_driving_batch = {}
+                    for key in he_driving_batch_list[0].keys():
+                        he_driving_batch[key] = torch.cat([h[key] for h in he_driving_batch_list], dim=0)  # shape: [batch_frames, ...]
                     
                     # Handle pose sequences in batch
                     if yaw_c_seq is not None:
-                        he_driving_batch['yaw_in'] = yaw_c_seq[:, start_idx:end_idx].reshape(-1)
+                        batch_yaw = yaw_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
+                        he_driving_batch['yaw_in'] = batch_yaw
                     if pitch_c_seq is not None:
-                        he_driving_batch['pitch_in'] = pitch_c_seq[:, start_idx:end_idx].reshape(-1)
+                        batch_pitch = pitch_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
+                        he_driving_batch['pitch_in'] = batch_pitch
                     if roll_c_seq is not None:
-                        he_driving_batch['roll_in'] = roll_c_seq[:, start_idx:end_idx].reshape(-1)
+                        batch_roll = roll_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
+                        he_driving_batch['roll_in'] = batch_roll
                     
                     # Batch keypoint transformation
                     kp_canonical_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_canonical.items()}

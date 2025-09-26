@@ -14,7 +14,7 @@ from tqdm import tqdm
 from contextlib import nullcontext
 
 # Import the basic animation functions we need
-from src.facerender.modules.make_animation import get_rotation_matrix, keypoint_transformation
+from src.facerender.modules.make_animation_fast import get_rotation_matrix, keypoint_transformation
 
 # --- Layer 1: Quality-Focused Memory Manager for Face Renderer ---
 

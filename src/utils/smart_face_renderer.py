@@ -49,7 +49,6 @@ class QualityFaceRenderMemoryManager:
         memory_per_frame = base_memory_gb * resolution_factor
         overhead_factor = 1.3  # Conservative overhead
         return memory_per_frame * overhead_factor
-        return memory_per_frame * overhead_factor
 
     def get_safe_batch_size(self, requested_size: int, img_size: int = 256) -> int:
         """Calculate safe batch size for face rendering based on available VRAM."""
@@ -259,70 +258,55 @@ class SmartFaceRenderWorker:
                 total_frames = target_semantics.shape[1]
                 predictions = []
                 
-                # Process frames in batches for GPU efficiency
-                desc = f'Smart Face Renderer (Batch={batch_size}, Natural Animation)' if self.natural_animation else f'Smart Face Renderer (Batch={batch_size}, Optimized)'
-                for start_idx in tqdm(range(0, total_frames, batch_size), desc):
-                    end_idx = min(start_idx + batch_size, total_frames)
-                    current_batch_size = end_idx - start_idx
+                # Process frames individually to avoid batch dimension issues
+                desc = f'Smart Face Renderer (Frame-by-Frame, Natural Animation)' if self.natural_animation else f'Smart Face Renderer (Frame-by-Frame, Optimized)'
+                for frame_idx in tqdm(range(total_frames), desc=desc):
+                    # Process single frame
+                    frame_semantics = target_semantics[:, frame_idx:frame_idx+1]  # Keep batch dimension [1, 1, feature_dim]
                     
-                    # Prepare batch data efficiently - follow working make_animation_fast.py approach
-                    batch_target_semantics = target_semantics[:, start_idx:end_idx]
-                    batch_target_semantics = batch_target_semantics.reshape(-1, batch_target_semantics.shape[-1])
+                    # Get driving head pose for this frame
+                    he_driving = mapping(frame_semantics.squeeze(1))  # Remove frame dimension for mapping [1, feature_dim]
                     
-                    # Batch process driving parameters - pass entire batch to mapping
-                    he_driving_batch = mapping(batch_target_semantics)
-                    
-                    # Handle pose sequences in batch
+                    # Handle pose sequences for single frame
                     if yaw_c_seq is not None:
-                        batch_yaw = yaw_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
-                        he_driving_batch['yaw_in'] = batch_yaw
+                        he_driving['yaw_in'] = yaw_c_seq[:, frame_idx]
                     if pitch_c_seq is not None:
-                        batch_pitch = pitch_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
-                        he_driving_batch['pitch_in'] = batch_pitch
+                        he_driving['pitch_in'] = pitch_c_seq[:, frame_idx]
                     if roll_c_seq is not None:
-                        batch_roll = roll_c_seq[:, start_idx:end_idx].squeeze(0)  # shape: [batch_frames]
-                        he_driving_batch['roll_in'] = batch_roll
+                        he_driving['roll_in'] = roll_c_seq[:, frame_idx]
                     
-                    # Batch keypoint transformation
-                    kp_canonical_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_canonical.items()}
-                    kp_driving_batch = keypoint_transformation(kp_canonical_batch, he_driving_batch, wo_exp=False)
+                    # Single frame keypoint transformation
+                    kp_driving = keypoint_transformation(kp_canonical, he_driving, wo_exp=False)
                     
                     # Choose animation approach based on natural_animation setting
                     if self.natural_animation:
                         # Natural mode: Use raw keypoints like original SadTalker for maximum realism
-                        kp_norm_batch = kp_driving_batch
+                        kp_norm = kp_driving
                     else:
                         # Optimized mode: Use keypoint normalization (may reduce some micro-expressions)
                         # For now, we'll still use raw keypoints for best quality
-                        kp_norm_batch = kp_driving_batch
+                        kp_norm = kp_driving
                     
-                    # Batch generation - follow working make_animation_fast.py approach
-                    source_image_batch = source_image.repeat(current_batch_size, 1, 1, 1)
-                    kp_source_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_source.items()}
-                    
-                    # Generate all frames in this batch at once
-                    out_batch = generator(source_image_batch, kp_source=kp_source_batch, kp_driving=kp_norm_batch)
-                    
-                    # Reshape batch predictions back to sequence format - follow working approach
-                    batch_predictions = out_batch['prediction'].reshape(1, current_batch_size, *out_batch['prediction'].shape[1:])
-                    predictions.append(batch_predictions)
+                    # Generate single frame
+                    out = generator(source_image, kp_source=kp_source, kp_driving=kp_norm)
+                    predictions.append(out['prediction'])
                     
                     # Dynamic GPU memory cleanup based on available memory
-                    if torch.cuda.is_available() and len(predictions) % 4 == 0:
+                    if torch.cuda.is_available() and frame_idx % 8 == 0:
                         total_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
                         available_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
                         available_ratio = available_memory_gb / 24.0
                         
                         # More frequent cleanup for low memory systems
-                        cleanup_frequency = 2 if available_ratio < 0.25 else 4  # 25% of 24GB (6GB)
-                        if len(predictions) % cleanup_frequency == 0:
+                        cleanup_frequency = 4 if available_ratio < 0.25 else 8  # 25% of 24GB (6GB)
+                        if frame_idx % cleanup_frequency == 0:
                             torch.cuda.empty_cache()
                             if available_ratio < 0.17:  # Less than 17% of 24GB (4GB)
                                 import gc
                                 gc.collect()
                 
-                # Concatenate all batch predictions
-                predictions_ts = torch.cat(predictions, dim=1)
+                # Stack all frame predictions
+                predictions_ts = torch.stack(predictions, dim=1)  # [1, total_frames, 3, H, W]
                 
                 # Final cleanup for low memory systems
                 if torch.cuda.is_available():

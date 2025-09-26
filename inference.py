@@ -110,11 +110,11 @@ def main(args):
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
     
-    # Set memory fraction to prevent over-allocation
+    # Set memory fraction for optimal GPU utilization (increased from 80% to 95%)
     if torch.cuda.is_available():
         try:
-            torch.cuda.set_per_process_memory_fraction(0.8)  # Use maximum 80% of VRAM
-            print("Set CUDA memory fraction to 80%")
+            torch.cuda.set_per_process_memory_fraction(0.95)  # Use 95% of VRAM for better utilization
+            print("Set CUDA memory fraction to 95% for optimal GPU utilization")
         except:
             pass
     
@@ -259,8 +259,9 @@ def main(args):
             
             print(f"GPU Memory Status: {available_memory_gb:.1f}GB available out of {gpu_memory_gb:.1f}GB total")
             
-            # Dynamic memory management based on available memory ratio
-            if available_ratio < 0.125:  # Less than 12.5% of 24GB (3GB)
+            # Dynamic memory management - optimized for actual GPU capacity
+            # Use actual GPU memory instead of 24GB reference for better scaling
+            if available_memory_gb < 4:  # Less than 4GB available
                 print(f"🚨 CRITICAL GPU MEMORY ({available_memory_gb:.1f}GB) - Ultra Conservation Mode")
                 effective_batch_size = 1
                 torch.backends.cudnn.benchmark = False
@@ -283,35 +284,36 @@ def main(args):
                     args.enhancer = None
                     args.background_enhancer = None
                 
-            elif available_ratio < 0.25:  # Less than 25% of 24GB (6GB)
+            elif available_memory_gb < 8:  # Less than 8GB available
                 print(f"⚠️ LOW GPU MEMORY ({available_memory_gb:.1f}GB) - Conservative Mode")
-                effective_batch_size = max(1, batch_size // 4)
-                torch.cuda.set_per_process_memory_fraction(0.8)
+                effective_batch_size = max(1, batch_size // 2)
+                torch.cuda.set_per_process_memory_fraction(0.85)
                 
                 # Moderate memory cleanup
                 for i in range(3):
                     gc.collect()
                     torch.cuda.empty_cache()
                 
-            elif available_ratio < 0.42:  # Less than 42% of 24GB (10GB)
+            elif available_memory_gb < 12:  # Less than 12GB available
                 print(f"📊 MODERATE GPU MEMORY ({available_memory_gb:.1f}GB) - Balanced Mode")
-                effective_batch_size = max(1, batch_size // 2)
+                effective_batch_size = max(1, int(batch_size * 0.75))
                 
-            elif available_ratio < 0.67:  # Less than 67% of 24GB (16GB)
+            elif available_memory_gb < 16:  # Less than 16GB available (covers user's 15.8GB T4)
                 print(f"✅ GOOD GPU MEMORY ({available_memory_gb:.1f}GB) - Standard Mode")
                 effective_batch_size = batch_size
                 
-            else:
+            else:  # 16GB+ available
                 print(f"🚀 HIGH GPU MEMORY ({available_memory_gb:.1f}GB) - Performance Mode")
-                effective_batch_size = batch_size
+                effective_batch_size = max(batch_size, int(batch_size * 1.5))  # Increase batch size for high-end GPUs
             
-            # Dynamic enhancer handling based on memory ratio
+            # Dynamic enhancer handling - more aggressive for better GPUs
             if (args.enhancer or args.background_enhancer):
-                if available_ratio < 0.33:  # Less than 33% of 24GB (8GB)
+                if available_memory_gb < 6:  # Less than 6GB available
                     print(f"⚠️ Limited memory for enhancers ({available_memory_gb:.1f}GB available)")
                     print("Enhancement will use conservative settings")
                 else:
                     print(f"✅ Sufficient memory for enhancers ({available_memory_gb:.1f}GB available)")
+                    # For GPUs with 8GB+, we can be more aggressive with enhancement
             
         except Exception as e:
             print(f"Warning: Could not check GPU memory, using default batch size: {e}")

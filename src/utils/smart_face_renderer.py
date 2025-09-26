@@ -304,15 +304,19 @@ class SmartFaceRenderWorker:
                         # For now, we'll still use raw keypoints for best quality
                         kp_norm_batch = kp_driving_batch
                     
-                    # Batch generation - THIS IS THE KEY GPU EFFICIENCY IMPROVEMENT
-                    source_image_batch = source_image.repeat(current_batch_size, 1, 1, 1)
-                    kp_source_batch = {k: v.repeat(current_batch_size, 1, 1) for k, v in kp_source.items()}
+                    # Batch generation - call generator for each frame (generator may not support batching)
+                    batch_predictions_list = []
+                    for frame_idx in range(current_batch_size):
+                        # Extract single frame inputs
+                        source_image_frame = source_image
+                        kp_source_frame = kp_source
+                        kp_driving_frame = {k: v[frame_idx:frame_idx+1] for k, v in kp_norm_batch.items()}
+                        
+                        out = generator(source_image_frame, kp_source=kp_source_frame, kp_driving=kp_driving_frame)
+                        batch_predictions_list.append(out['prediction'])
                     
-                    # Generate all frames in this batch at once
-                    out_batch = generator(source_image_batch, kp_source=kp_source_batch, kp_driving=kp_norm_batch)
-                    
-                    # Reshape batch predictions back to sequence format
-                    batch_predictions = out_batch['prediction'].reshape(1, current_batch_size, *out_batch['prediction'].shape[1:])
+                    # Stack predictions for this batch
+                    batch_predictions = torch.stack(batch_predictions_list, dim=0).unsqueeze(0)  # [1, current_batch_size, 3, 256, 256]
                     predictions.append(batch_predictions)
                     
                     # Dynamic GPU memory cleanup based on available memory
